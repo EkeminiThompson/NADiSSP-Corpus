@@ -1,0 +1,15 @@
+{
+  "generated_at": "2026-10-13T12:14:00+00:00",
+  "seed": 2026,
+  "n_source": 31679,
+  "n_target": 36000,
+  "total": 67679,
+  "breakdown_source": {
+    "CMAPSS_real": 12879,
+    "AI4I_real": 10000,
+    "3W_style_synth": 2600,
+    "ESPset_style_synth": 6200
+  },
+  "target_batches": 120,
+  "note": "Target stored as 120 batch files of 200 sequences each for memory efficiency. Use load_full_corpus.py to concatenate."
+}
