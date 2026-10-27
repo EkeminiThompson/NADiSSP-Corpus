@@ -1,0 +1,32 @@
+# Data (large / licensed)
+data/raw/
+data/processed/
+data/augmented/
+*.npz
+*.csv
+*.parquet
+*.h5
+*.pt
+*.pth
+*.joblib
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Results that are regenerable
+results/figures/
+checkpoints/
+*.log
