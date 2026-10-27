@@ -1,0 +1,16 @@
+INSERT / UPDATE IN CHAPTER 3 (around Section 3.4 / Table 3.6)
+
+3.4.x  Real Facility Target Domain – Petrobras 3W Dataset
+
+In addition to the four international benchmark datasets used for source-domain pre-training and Nigerian physics-informed augmentation, the experimental design explicitly incorporates the Petrobras 3W Dataset 2.0.0 (Vargas et al., 2019; 3W Dataset 2.0.0) as the primary real-facility target domain.
+
+The 3W corpus consists of multivariate time-series instances recorded from real offshore oil wells operated by Petrobras. It contains expert-labelled rare undesirable events (including, among others, abrupt productivity loss, hydrate formation, and spalling). Because the data originate from actual production assets rather than laboratory test-rigs or purely simulated environments, evaluation against 3W provides a stronger test of ecological validity than evaluation against augmented benchmarks alone.
+
+In the NADIP experimental protocol:
+
+• 3W instances are assigned domain_label = 1 (target).
+• Domain-shift metrics (MMD, Wasserstein-1) are computed between the combined source benchmarks and the 3W real-facility distribution.
+• Predictive performance (AUPRC, RUL RMSE) is reported both on the Nigerian-augmented synthetic target and on the real 3W windows.
+• Ablation and resilience results are stratified by asset class, with the 3W stratum identified as the real-facility stratum.
+
+This design choice directly addresses the limitation that purely simulated or laboratory datasets may underestimate the severity of real industrial domain shift, while remaining fully reproducible and free of proprietary Nigerian operator data.

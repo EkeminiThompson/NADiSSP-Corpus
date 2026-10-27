@@ -1,0 +1,4 @@
+SECTION 5.5 – NEW CONTRIBUTION 8
+
+8. Empirical demonstration of successful transfer to a real industrial facility dataset.  
+This study provides the first published multi-asset domain-adaptation results for predictive maintenance that explicitly include genuine oil-well event data from the Petrobras 3W Dataset 2.0.0. By treating 3W as the primary real-facility target domain (rather than merely another benchmark), the work supplies concrete evidence that a hybrid architecture trained on international controlled datasets and physics-informed Nigerian augmentations can generalise to real offshore production environments. This strengthens the ecological validity of the reported performance claims and offers a reproducible template for future studies that seek to bridge the gap between laboratory benchmarks and operational oil-and-gas assets.
