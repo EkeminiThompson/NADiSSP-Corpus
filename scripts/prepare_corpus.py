@@ -1,31 +1,23 @@
 #!/usr/bin/env python
-"""
-Prepare the full experimental corpus:
-  - Load public benchmarks
-  - Load real Petrobras 3W facility data
-  - Generate Nigerian-augmented variants
-  - Save combined_corpus.npz
-"""
-
-from pathlib import Path
-import sys
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from src.data.dataset import build_combined_corpus
-
+"""Stage 1-3 of data collection (§3.4): load the four datasets, preprocess, stratify, augment, split, save."""
+import argparse
+import _boot  # noqa: F401
+from src.config import add_common_args, load_config
+from src.pipeline import prepare
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("NADIP – Corpus Preparation")
-    print("Primary real facility target: Petrobras 3W")
-    print("=" * 60)
-    corpus = build_combined_corpus(
-        window=50,
-        stride=10,
-        apply_nigerian_aug=True,
-        max_3w_instances=300,
-        seed=42,
-    )
-    print("\nDone. Corpus ready for training.")
+    ap = argparse.ArgumentParser(description=__doc__)
+    add_common_args(ap)
+    ap.add_argument("--raw-dir", default=None)
+    a = ap.parse_args()
+    cfg = load_config(a.config, a.overrides)
+    meta = prepare(cfg, a.raw_dir)["meta"]
+    print(f"corpus: {meta['n_total']} windows  (source {meta['n_source']}, target {meta['n_target']})")
+    for k, v in meta["datasets"].items():
+        print(f"  {k:7s} source {v['n_source']:6d}/{v['requested_source']:<6d} target {v['n_target']:6d}/{v['requested_target']:<6d}")
+    for k, why in meta["missing_datasets"].items():
+        print(f"  MISSING {k}: {why.splitlines()[0]}")
+    for s in meta["shortfalls"]:
+        print(f"  shortfall: {s}")
+    if meta["prevalence_outside_8_20pct"]:
+        print(f"  note: train failure prevalence outside the 8-20% band for {meta['prevalence_outside_8_20pct']}")

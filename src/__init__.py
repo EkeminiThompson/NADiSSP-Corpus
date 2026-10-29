@@ -1,2 +1,1 @@
-# NADIP package
-__version__ = "1.0.0"
+"""NADIP: Nigerian-Adapted Domain-Invariant Prognostic framework (dissertation code)."""

@@ -1,0 +1,159 @@
+# NADIP experiment configuration.
+#
+# Every value below is taken from the dissertation (section / table noted).
+# Where the dissertation is internally inconsistent, the choice made here is
+# noted with "NOTE" and listed in README.md ("Where the document disagrees with itself").
+# Nothing in this file is a result: results are only ever written by the scripts
+# into results/*.json.
+
+seed: 42                         # §3.4, Table 3.16
+n_seeds: 10                      # Table 3.16 (statistical conclusion validity)
+
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  results_dir: results
+  checkpoint_dir: checkpoints
+
+data:
+  window: 50                     # Table 3.13 (sequence length, cycles)
+  stride: 1                      # Table 3.13
+  datasets: [cmapss, ai4i, w3, espset]
+  cmapss_subsets: [FD001, FD002, FD003, FD004]
+  use_op_settings: false         # §3.3.1: 21 sensors only
+  rul_cap: 130                   # Table 3.13 piecewise-linear RUL cap
+  critical_rul: 30               # NOTE: not stated in the document; common PHM convention
+  early_degradation_rul: 70      # NOTE: not stated in the document; used only for the 3-class health state
+  w3_half_width: 200             # Table 3.13: +/-200 samples around labelled event onset
+  w3_min_real_fraction: 0.70     # Table 3.8
+  iqr_k: 1.5                     # Table 3.13
+  min_cell: 30                   # §3.3.3 minimum stratum size
+  # Table 3.11
+  source_counts: {cmapss: 8000, ai4i: 5000, w3: 2000, espset: 4000}
+  target_counts: {cmapss: 9600, ai4i: 6000, w3: 4400, espset: 4000}
+  split: {test: 0.20, val: 0.10} # §3.3.3 "minimum 20 percent" test; split is by unit/group, never by window
+  target_label_fraction: 0.30    # §3.4.3: 70% of target labels stripped
+  target_label_in_task_loss: false   # §3.10.1: L_task is on labelled *source* sequences
+
+augmentation:                    # Tables 3.9a / 3.9b
+  # Asset-stressor matrix (Table 3.9b). NOTE: §3.4.3 lists slightly different assignments;
+  # Table 3.9b is the explicit matrix, so it is used here.
+  matrix:
+    cmapss: [humidity, dropout, corrosion, sampling]
+    ai4i:   [humidity, dropout, sabotage, sampling]
+    w3:     [humidity, dropout, wave]
+    espset: [humidity, dropout, corrosion]
+  apply_prob: {humidity: 1.0, dropout: 0.8, sabotage: 1.0, corrosion: 1.0, sampling: 0.3, wave: 1.0}
+  humidity:
+    sigma_range: [0.05, 0.12]    # x (RH/100)
+    rh_range: [80, 95]
+    drift_bound: 0.05            # slow baseline shift bound (+/-3-5%), §3.4.3(a)
+    dataset_scale: {cmapss: 1.0, ai4i: 1.0, w3: 1.4, espset: 1.0}   # w3 "highest" drift
+  dropout:
+    block_range: [5, 20]
+    fraction_range:              # 25-40% missing; AI4I highest, 3W lowest (§3.3.4.1)
+      cmapss: [0.30, 0.35]
+      ai4i:   [0.35, 0.40]
+      w3:     [0.25, 0.30]
+      espset: [0.30, 0.35]
+  sabotage:
+    prob: 0.03                   # per time step
+    amp_range: [3.0, 8.0]        # x channel std (§3.4.3(c))
+  corrosion:
+    lambda_range: [0.01, 0.03]   # per 100 cycles (Table 3.9a)
+    hf_attenuation: [0.10, 0.20]
+  sampling:
+    factors: [2, 4, 5, 10]
+    jitter: 0.10
+  wave:
+    freq_hz_range: [0.1, 0.5]
+    sample_rate_hz: 1.0
+    amplitude: 0.08
+
+model:
+  d_model: 192                   # Table 3.15b
+  nhead: 8
+  num_layers: 12
+  dim_feedforward: 768
+  dropout: 0.1
+  positional: sinusoidal         # eq. 1 (sinusoidal PE); "learnable" also supported (§3.10.2)
+  head_hidden: 64
+  discriminator_layers: 3        # Table 3.15b: 3-layer MLP
+  projector_layers: 3
+  pretrained_init: null          # path to a *compatible* checkpoint, or null. See README: Kinetics-400 weights
+  freeze_lower_fraction: 0.5     # only used when pretrained_init is set (§3.10.2)
+  freeze_epochs: 5
+
+training:
+  batch_size: 64                 # Table 3.18
+  stage2_simclr:
+    epochs: 100                  # §3.10.3
+    lr: 1.0e-3
+    temperature: 0.5             # Table 3.15b
+    mask_channel_frac: 0.10      # §3.4.3
+    time_warp_gamma: 0.5
+    jitter_sigma: 0.01
+    rows_per_epoch: 4096         # target windows re-augmented (fresh physics view) each epoch
+    sampling_weight: {w3: 2.0, espset: 2.0}   # §3.4.3: 3W and ESPset weighted more heavily in positive pairs
+  stage3_joint:
+    epochs: 50                   # §3.10.3
+    lr_start: 3.0e-4
+    lr_end: 1.0e-5
+    lambda_d_max: 1.0            # Ganin sigmoid ramp 0 -> 1 (eq. 3)
+    lambda_c: 0.1
+    lambda_survival: 1.0
+    rul_weight: 1.0
+    cls_weight: 1.0
+    early_stop_patience: 10
+  stage4_weibull:
+    epochs: 20                   # §3.10.3, encoder frozen
+    lr: 1.0e-2
+    loss: weibull                # "weibull" (eq. 4-5 likelihood) | "cox" (eq. 6 partial likelihood)
+  stage5_xgboost:
+    n_estimators: 300            # Table 3.15b
+    max_depth: 7
+    early_stopping_rounds: 50
+    ensemble_weight: 0.5         # NOTE: blend of transformer and XGBoost outputs; the document does not state a weight
+
+evaluation:
+  mmd_sigma: 1.0                 # Table 3.17
+  sinkhorn_eps: 0.01
+  max_samples: 1000
+  threshold: val_best_f1         # operating threshold for F1 is chosen on the validation split
+  targets:                       # Table 3.19 -- targets, NOT results
+    auprc: 0.85
+    rul_rmse: 13.5
+    mmd: 0.28
+    wasserstein_reduction: 0.65
+
+economics:                       # Table 4.9a
+  n_runs: 10000
+  horizon_years: 5
+  discount_rate: 0.05
+  downtime_cost_mean_usd: 8.4e+6
+  downtime_cost_sd_usd: 1.6e+6
+  lambda_reactive: 4.7
+  spare_premium_range: [0.25, 0.45]
+  labour_rate_mean: 485
+  labour_rate_sd: 72
+  baseline_labour_musd: 42.1
+  baseline_spares_musd: 26.8
+  nadip_labour_musd: 31.4
+  nadip_spares_musd: 17.3
+  # Incident reduction is an explicit, documented assumption (Table 4.9a: "projected from AUPRC
+  # (conservative mapping)"). The mapping is implemented in economic.incident_reduction().
+  intervention_efficacy: 0.70
+  lambda_nadip_override: null    # set a number to bypass the AUPRC mapping
+  deployment_capex_musd: 0.0     # NOTE: the document gives no deployment cost; set it to include one
+  deployment_opex_musd_per_year: 0.0
+
+deployment:
+  latency_repeats: 200
+  packet_loss_rates: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]   # Table 3.20 / 4.11
+  outage_windows: {h24: 24, h48: 48, h72: 72, quarter: 2160}  # hours of drift accumulated
+  ewc_lambda: 100.0
+  recovery_max_epochs: 10
+  recovery_lr: 1.0e-4
+  cache_limit_hours: 72          # §3.9 edge layer: 72-hour cache
+  drift_max_std: 0.8             # SIMULATION knob: sensor drift (std units) reached after a quarter-long outage
+  edge_cache_above_loss: 0.30    # Fig. 3.2: offline cache path above 30% packet loss

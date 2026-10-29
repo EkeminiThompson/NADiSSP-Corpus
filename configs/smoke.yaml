@@ -1,0 +1,38 @@
+# Tiny profile used by tests/ and for a quick CPU sanity run:
+#   python scripts/run_all.py --config configs/smoke.yaml
+# Same pipeline, same code paths, small sizes. Numbers it produces mean nothing scientifically.
+
+seed: 42
+n_seeds: 2
+
+data:
+  stride: 5
+  min_cell: 4
+  w3_half_width: 60
+  source_counts: {cmapss: 240, ai4i: 120, w3: 90, espset: 120}
+  target_counts: {cmapss: 288, ai4i: 144, w3: 132, espset: 120}
+
+model:
+  d_model: 32
+  nhead: 4
+  num_layers: 2
+  dim_feedforward: 64
+  head_hidden: 16
+
+training:
+  batch_size: 32
+  stage2_simclr: {epochs: 2}
+  stage3_joint: {epochs: 3, early_stop_patience: 3}
+  stage4_weibull: {epochs: 3}
+  stage5_xgboost: {n_estimators: 20, max_depth: 3, early_stopping_rounds: 5}
+
+evaluation:
+  max_samples: 200
+
+economics:
+  n_runs: 500
+
+deployment:
+  latency_repeats: 5
+  outage_windows: {h24: 24, h72: 72}
+  recovery_max_epochs: 2
