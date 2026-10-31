@@ -118,3 +118,15 @@ def test_default_architecture_matches_table_3_15b():
     assert len(m.backbone.layers) == 12 and m.backbone.d_model == 192
     assert sum(isinstance(l, torch.nn.Linear) for l in m.domain_disc) == 3          # 3-layer MLP discriminator
     assert sum(isinstance(l, torch.nn.Linear) for l in m.projector) == 3            # 3-layer MLP projector
+
+
+def test_masked_losses_ignore_nan_targets_in_loss_and_gradient():
+    import torch
+    from src.models.nadip import masked_mse, masked_bce
+    pred = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)
+    tgt = torch.tensor([1.5, float("nan"), float("nan")])
+    mask = torch.tensor([True, False, False])
+    loss = masked_mse(pred, tgt, mask) + masked_bce(pred, torch.tensor([1.0, float("nan"), 0.0]), mask)
+    loss.backward()
+    assert torch.isfinite(loss) and torch.isfinite(pred.grad).all()
+    assert pred.grad[1] == 0 and pred.grad[2] == 0

@@ -1,70 +1,66 @@
-"""Normalisation and RUL capping."""
+"""Preprocessing (Table 3.13): forward-fill imputation, 1.5xIQR clipping, per-sensor z-scoring.
+
+Statistics are fitted on the *clean source, training-split* windows of each dataset only and then
+applied to source and Nigerian-augmented windows alike. Fitting on both would normalise the very
+shift the study measures; fitting on the test split would leak.
+"""
 
 from __future__ import annotations
 
 from typing import Dict
 
 import numpy as np
+import pandas as pd
 
 
-def cap_rul(rul: np.ndarray, cap: float) -> np.ndarray:
-    r = np.asarray(rul, dtype=np.float32).copy()
-    r = np.minimum(r, float(cap))
-    return r
+def fill_series(X: np.ndarray) -> np.ndarray:
+    """Time-aware forward-fill, then back-fill leading gaps; channels that are entirely missing become 0."""
+    df = pd.DataFrame(X).ffill().bfill()
+    return df.fillna(0.0).to_numpy(dtype=np.float32)
+
+
+def missing_fraction(X: np.ndarray) -> float:
+    return float(np.isnan(X).mean())
 
 
 class Normalizer:
-    """Per-channel z-score with optional IQR-style clipping on the raw scale."""
+    """Per-sensor IQR clipping bounds and z-score statistics for one dataset."""
 
     def __init__(self, iqr_k: float = 1.5):
-        self.iqr_k = float(iqr_k)
-        self.mean_: np.ndarray | None = None
-        self.std_: np.ndarray | None = None
-        self.lo_: np.ndarray | None = None
-        self.hi_: np.ndarray | None = None
+        self.iqr_k = iqr_k
+        self.lo = self.hi = self.mean = self.std = None
 
-    def fit(self, X: np.ndarray) -> "Normalizer":
-        flat = X.reshape(-1, X.shape[-1]).astype(np.float64)
-        q1 = np.nanpercentile(flat, 25, axis=0)
-        q3 = np.nanpercentile(flat, 75, axis=0)
-        iqr = np.maximum(q3 - q1, 1e-8)
-        self.lo_ = q1 - self.iqr_k * iqr
-        self.hi_ = q3 + self.iqr_k * iqr
-        clipped = np.clip(flat, self.lo_, self.hi_)
-        self.mean_ = np.nanmean(clipped, axis=0)
-        self.std_ = np.nanstd(clipped, axis=0)
-        self.std_ = np.where(self.std_ < 1e-8, 1.0, self.std_)
+    def fit(self, windows: np.ndarray) -> "Normalizer":
+        flat = windows.reshape(-1, windows.shape[-1]).astype(np.float64)
+        q1, q3 = np.percentile(flat, [25, 75], axis=0)
+        iqr = q3 - q1
+        self.lo, self.hi = q1 - self.iqr_k * iqr, q3 + self.iqr_k * iqr
+        clipped = np.clip(flat, self.lo, self.hi)
+        self.mean = clipped.mean(axis=0)
+        std = clipped.std(axis=0)
+        self.std = np.where(std < 1e-6, 1.0, std)          # constant channels stay constant rather than exploding
         return self
 
     def clip(self, X: np.ndarray) -> np.ndarray:
-        assert self.lo_ is not None
-        return np.clip(X, self.lo_, self.hi_).astype(np.float32)
+        return np.clip(X, self.lo, self.hi).astype(np.float32)
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        assert self.mean_ is not None
-        return ((X - self.mean_) / self.std_).astype(np.float32)
+        return ((X - self.mean) / self.std).astype(np.float32)
 
-    def inverse(self, X: np.ndarray) -> np.ndarray:
-        assert self.mean_ is not None
-        m, s = self.mean_, self.std_
-        if X.shape[-1] != len(m):
-            raise ValueError("inverse expects last dim to match fitted channels")
-        return (X * s + m).astype(np.float32)
+    def inverse(self, Z: np.ndarray) -> np.ndarray:
+        return (Z * self.std + self.mean).astype(np.float32)
 
-    def to_dict(self) -> Dict:
-        return {
-            "iqr_k": self.iqr_k,
-            "mean": self.mean_.tolist(),
-            "std": self.std_.tolist(),
-            "lo": self.lo_.tolist(),
-            "hi": self.hi_.tolist(),
-        }
+    def to_dict(self) -> Dict[str, list]:
+        return {k: getattr(self, k).tolist() for k in ("lo", "hi", "mean", "std")} | {"iqr_k": self.iqr_k}
 
     @classmethod
     def from_dict(cls, d: Dict) -> "Normalizer":
-        n = cls(d.get("iqr_k", 1.5))
-        n.mean_ = np.asarray(d["mean"], dtype=np.float64)
-        n.std_ = np.asarray(d["std"], dtype=np.float64)
-        n.lo_ = np.asarray(d["lo"], dtype=np.float64)
-        n.hi_ = np.asarray(d["hi"], dtype=np.float64)
+        n = cls(d["iqr_k"])
+        for k in ("lo", "hi", "mean", "std"):
+            setattr(n, k, np.asarray(d[k], dtype=np.float64))
         return n
+
+
+def cap_rul(rul_raw: np.ndarray, cap: float) -> np.ndarray:
+    """Piecewise-linear RUL: min(RUL, cap) (Table 3.13)."""
+    return np.minimum(rul_raw, cap).astype(np.float32)

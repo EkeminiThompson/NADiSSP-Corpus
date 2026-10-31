@@ -1,135 +1,131 @@
-"""Group-wise splits and stratified sampling (Tables 3.8, 3.13)."""
+"""Window enumeration, stratified sampling (§3.3.3, Table 3.8) and group-level splitting.
+
+Splitting is by *group* (engine / well instance / ESP unit / AI4I block): all windows of a unit,
+and all Nigerian-augmented variants derived from them, land in the same split. Splitting windows
+at random would put overlapping windows (stride 1, length 50) on both sides of the train/test line.
+"""
 
 from __future__ import annotations
 
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 
+from .loaders import Series
 
-def assign_splits(
-    groups: np.ndarray,
-    rng: np.random.Generator,
-    val_frac: float = 0.2,
-    test_frac: float = 0.1,
-) -> np.ndarray:
-    """Assign each *group* to train(0)/val(1)/test(2). Never splits a group across folds."""
-    groups = np.asarray(groups)
-    uniq = np.unique(groups)
-    rng.shuffle(uniq)
-    n = len(uniq)
-    if n < 3:
-        return np.zeros(len(groups), dtype=np.int8)
-    n_test = max(1, int(round(n * test_frac)))
-    n_val = max(1, int(round(n * val_frac)))
-    if n_test / n <= test_frac and n_test + 1 + n_val < n:
-        n_test += 1
-    if n_test + n_val >= n:
-        n_test = max(1, n // 5)
-        n_val = max(1, n // 5)
-        if n_test + n_val >= n:
-            return np.zeros(len(groups), dtype=np.int8)
-    test_g = set(uniq[:n_test])
-    val_g = set(uniq[n_test:n_test + n_val])
-    out = np.zeros(len(groups), dtype=np.int8)
-    for i, g in enumerate(groups):
-        if g in test_g:
-            out[i] = 2
-        elif g in val_g:
-            out[i] = 1
+
+def enumerate_windows(series: List[Series], window: int, stride: int) -> Dict[str, np.ndarray]:
+    """Candidate windows as parallel arrays (series index, end index and the labels at the window end)."""
+    s_idx, ends = [], []
+    for i, s in enumerate(series):
+        T = len(s.X)
+        if T < window:
+            continue
+        e = np.arange(window - 1, T, stride)
+        s_idx.append(np.full(len(e), i, dtype=np.int32))
+        ends.append(e.astype(np.int32))
+    if not s_idx:
+        z = np.empty(0, dtype=np.int32)
+        return {"s": z, "end": z, "fail": z, "health": z, "event": z, "has_rul": z.astype(bool),
+                "rul_raw": z.astype(np.float32), "group": np.empty(0, dtype=object)}
+    s_idx, ends = np.concatenate(s_idx), np.concatenate(ends)
+    out = {"s": s_idx, "end": ends}
+    for key, attr in (("fail", "fail"), ("health", "health"), ("event", "event_class"), ("rul_raw", "rul_raw")):
+        out[key] = np.empty(len(ends), dtype=np.float32 if key == "rul_raw" else np.int16)
+    out["has_rul"] = np.zeros(len(ends), dtype=bool)
+    out["group"] = np.empty(len(ends), dtype=object)
+    pos = 0
+    for i, s in enumerate(series):
+        m = int((s_idx == i).sum())
+        if m == 0:
+            continue
+        e = ends[pos:pos + m]
+        out["fail"][pos:pos + m] = s.fail[e]
+        out["health"][pos:pos + m] = s.health[e]
+        out["event"][pos:pos + m] = s.event_class[e]
+        out["rul_raw"][pos:pos + m] = s.rul_raw[e]
+        out["has_rul"][pos:pos + m] = s.has_rul
+        out["group"][pos:pos + m] = s.unit
+        pos += m
     return out
 
 
-def stratified_sample(
-    strata: np.ndarray,
-    size: int,
-    rng: np.random.Generator,
-    min_cell: int = 5,
-) -> np.ndarray:
-    """Sample `size` indices with at least min_cell per stratum when possible."""
-    strata = np.asarray(strata)
-    keys, inv, counts = np.unique(strata, return_inverse=True, return_counts=True)
-    n = len(strata)
-    size = min(size, n)
-    alloc = np.minimum(counts, min_cell).astype(int)
-    remaining = size - int(alloc.sum())
-    if remaining < 0:
-        order = np.argsort(-counts)
-        alloc[:] = 0
-        left = size
-        for i in order:
-            take = min(counts[i], max(1, left // max(1, len(keys) - list(order).index(i))))
-            take = min(take, left, counts[i])
-            alloc[i] = take
-            left -= take
-            if left <= 0:
+def assign_splits(groups: np.ndarray, rng: np.random.Generator, test: float, val: float) -> np.ndarray:
+    """Split id per window (0 train, 1 val, 2 test) with whole groups assigned together.
+
+    Groups are shuffled and allocated greedily to reach the target window fractions. With fewer than
+    three groups there is nothing to hold out without leakage, so everything stays in train.
+    """
+    split = np.zeros(len(groups), dtype=np.int8)
+    uniq, inv, counts = np.unique(groups, return_inverse=True, return_counts=True)
+    if len(uniq) < 3:
+        return split
+    order = rng.permutation(len(uniq))
+    total = counts.sum()
+    want = {2: test * total, 1: val * total}
+    got = {2: 0, 1: 0}
+    assign = np.zeros(len(uniq), dtype=np.int8)
+    for g in order:                                   # test first, then val; at least one group each
+        for sid in (2, 1):
+            if got[sid] < want[sid] or got[sid] == 0:
+                assign[g] = sid
+                got[sid] += counts[g]
                 break
-        remaining = 0
-    if remaining > 0:
-        capacity = counts - alloc
-        while remaining > 0 and capacity.sum() > 0:
-            weights = capacity / capacity.sum()
-            pick = int(rng.choice(len(keys), p=weights))
-            if capacity[pick] > 0:
-                alloc[pick] += 1
-                capacity[pick] -= 1
-                remaining -= 1
-            else:
-                capacity[pick] = 0
-    chosen = []
-    for k_i, k in enumerate(keys):
-        idx = np.flatnonzero(inv == k_i)
-        rng.shuffle(idx)
-        chosen.append(idx[: alloc[k_i]])
-    out = np.concatenate(chosen) if chosen else np.array([], dtype=int)
-    rng.shuffle(out)
-    return out.astype(int)
+    return assign[inv]
 
 
-def sample_w3(
-    event: np.ndarray,
-    provenance: np.ndarray,
-    size: int,
-    rng: np.random.Generator,
-    min_cell: int = 5,
-    min_real_fraction: float = 0.7,
-) -> np.ndarray:
-    """Stratify by event class while enforcing min_real_fraction of real wells per cell."""
-    event = np.asarray(event)
-    provenance = np.asarray(provenance)
-    keys = np.unique(event)
-    pools = []
-    for e in keys:
-        mask = event == e
-        real = np.flatnonzero(mask & (provenance == "real"))
-        sim = np.flatnonzero(mask & (provenance != "real"))
-        rng.shuffle(real)
-        rng.shuffle(sim)
-        pools.append((e, real, sim))
-    per = max(min_cell, size // max(1, len(keys)))
-    chosen = []
-    for e, real, sim in pools:
-        n_real = int(np.ceil(per * min_real_fraction))
-        n_real = min(n_real, len(real))
-        n_sim = min(per - n_real, len(sim))
-        take = list(real[:n_real]) + list(sim[:n_sim])
-        chosen.extend(take)
-    chosen = np.array(chosen, dtype=int)
-    if len(chosen) < size:
-        rest = np.setdiff1d(np.arange(len(event)), chosen, assume_unique=False)
-        rest_real = rest[provenance[rest] == "real"]
-        rest_other = rest[provenance[rest] != "real"]
-        rng.shuffle(rest_real)
-        rng.shuffle(rest_other)
-        fill = np.concatenate([rest_real, rest_other])[: size - len(chosen)]
-        chosen = np.concatenate([chosen, fill])
-    if len(chosen) > size:
-        sim_mask = provenance[chosen] != "real"
-        sim_idx = np.flatnonzero(sim_mask)
-        rng.shuffle(sim_idx)
-        drop = len(chosen) - size
-        keep = np.ones(len(chosen), dtype=bool)
-        keep[sim_idx[:drop]] = False
-        if keep.sum() > size:
-            keep[np.flatnonzero(keep)[size:]] = False
-        chosen = chosen[keep]
-    rng.shuffle(chosen)
-    return chosen[:size].astype(int)
+def _allocate(counts: Dict[str, int], n: int, min_cell: int) -> Dict[str, int]:
+    """Proportional allocation with a floor of min(min_cell, stratum size) per stratum."""
+    total = sum(counts.values())
+    if n >= total:
+        return dict(counts)
+    keys = sorted(counts)
+    alloc = {k: min(counts[k], max(int(np.floor(n * counts[k] / total)), min(min_cell, counts[k]))) for k in keys}
+    diff = n - sum(alloc.values())
+    # trim or top-up the largest strata first
+    for k in sorted(keys, key=lambda k: -counts[k]) * (abs(diff) + 1):
+        if diff == 0:
+            break
+        if diff > 0 and alloc[k] < counts[k]:
+            alloc[k] += 1
+            diff -= 1
+        elif diff < 0 and alloc[k] > min(min_cell, counts[k]):
+            alloc[k] -= 1
+            diff += 1
+    return alloc
+
+
+def stratified_sample(strata: np.ndarray, n: int, rng: np.random.Generator, min_cell: int) -> np.ndarray:
+    """Indices of a stratified draw of (up to) n items, without replacement."""
+    if n <= 0 or len(strata) == 0:
+        return np.empty(0, dtype=int)
+    keys, inv = np.unique(strata.astype(str), return_inverse=True)
+    counts = {k: int((inv == i).sum()) for i, k in enumerate(keys)}
+    alloc = _allocate(counts, n, min_cell)
+    picks = []
+    for i, k in enumerate(keys):
+        members = np.flatnonzero(inv == i)
+        picks.append(rng.choice(members, size=alloc[k], replace=False))
+    return np.sort(np.concatenate(picks))
+
+
+def sample_w3(event: np.ndarray, provenance: np.ndarray, n: int, rng: np.random.Generator,
+              min_cell: int, min_real_fraction: float) -> np.ndarray:
+    """3W: stratify by event type x provenance with real instances making up >= min_real_fraction of each
+    event-type draw (Table 3.8); simulated instances only fill the remainder."""
+    if n <= 0 or len(event) == 0:
+        return np.empty(0, dtype=int)
+    ev_keys, inv = np.unique(event, return_inverse=True)
+    counts = {str(k): int((inv == i).sum()) for i, k in enumerate(ev_keys)}
+    alloc = _allocate(counts, n, min_cell)
+    picks = []
+    for i, k in enumerate(ev_keys):
+        members = np.flatnonzero(inv == i)
+        real = members[provenance[members] == "real"]
+        sim = members[provenance[members] != "real"]
+        need = alloc[str(k)]
+        n_real = min(len(real), max(int(np.ceil(min_real_fraction * need)), need - len(sim)))
+        n_sim = min(len(sim), need - n_real)
+        picks.append(rng.choice(real, size=n_real, replace=False) if n_real else np.empty(0, dtype=int))
+        picks.append(rng.choice(sim, size=n_sim, replace=False) if n_sim else np.empty(0, dtype=int))
+    return np.sort(np.concatenate(picks)) if picks else np.empty(0, dtype=int)
