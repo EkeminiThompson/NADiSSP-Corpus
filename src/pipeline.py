@@ -51,6 +51,14 @@ def run_one(cfg: Dict, bundle: Bundle, meta: Dict, variant_name: str, seed: int,
                          "this ablation would be identical to full_nadip."}
         dump(rec, path)
         return rec
+    if v.datasets is not None:
+        present = {n for n, m in meta.get("datasets", {}).items() if m.get("n_source", 0) > 0}
+        if not (present & set(v.datasets)):
+            rec = {"variant": variant_name, "seed": seed, "status": "not_applicable",
+                   "reason": f"none of this variant's datasets {list(v.datasets)} is present in the corpus "
+                             f"(present: {sorted(present)})."}
+            dump(rec, path)
+            return rec
     t0 = time.time()
     t = train_variant(cfg, bundle, meta, v, seed, ckpt_root=resolve_path(cfg, "checkpoint_dir"), force=force, log=log)
     rec = {"variant": variant_name, "seed": seed, "status": "ok", "train_seconds": time.time() - t0, "info": t.info,

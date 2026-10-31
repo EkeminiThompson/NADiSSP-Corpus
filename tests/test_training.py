@@ -91,3 +91,12 @@ def test_baselines_run(cfg, bundle, meta):
         rows = bundle.idx("test")
         o = t.predict(bundle.X[rows], bundle.dataset[rows])
         assert o["rul"].shape == (len(rows),) and np.isfinite(o["fail_prob"]).all()
+
+
+def test_variant_whose_datasets_are_absent_is_not_applicable(cfg, bundle, meta, tmp_path):
+    """e.g. no_3w_espset when only 3W was available: report not_applicable instead of crashing."""
+    c = dict(cfg); c["_root"] = str(tmp_path)
+    c["paths"] = {**cfg["paths"], "results_dir": str(tmp_path / "r"), "checkpoint_dir": str(tmp_path / "c")}
+    m = {**meta, "datasets": {"w3": meta["datasets"]["w3"]}}
+    rec = run_one(c, bundle, m, "no_3w_espset", 0)
+    assert rec["status"] == "not_applicable" and "not" not in rec.get("error", "")
