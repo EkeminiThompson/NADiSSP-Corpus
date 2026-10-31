@@ -22,7 +22,6 @@ import torch.nn.functional as F
 from torch.autograd import Function
 
 
-# ------------------------------------------------------------------------------------- GRL
 class GradientReversalFunction(Function):
     @staticmethod
     def forward(ctx, x, lambda_):
@@ -44,11 +43,9 @@ class GradientReversal(nn.Module):
 
 
 def ganin_lambda(progress: float, max_lambda: float = 1.0) -> float:
-    """Eq. 3: lambda_d(p) = 2 / (1 + exp(-10 p)) - 1, scaled by max_lambda."""
     return max_lambda * (2.0 / (1.0 + math.exp(-10.0 * progress)) - 1.0)
 
 
-# ------------------------------------------------------------------------------- backbone
 def sinusoidal_pe(max_len: int, d_model: int) -> torch.Tensor:
     pe = torch.zeros(max_len, d_model)
     pos = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
@@ -63,78 +60,63 @@ class TimeSeriesTransformer(nn.Module):
                  dim_feedforward: int = 768, dropout: float = 0.1, positional: str = "sinusoidal",
                  max_len: int = 256):
         super().__init__()
-        self.input_proj = nn.Linear(n_channels, d_model)
-        if positional == "learnable":
-            self.pos = nn.Parameter(torch.randn(1, max_len, d_model) * 0.02)
+        self.input = nn.Linear(n_channels, d_model)
+        self.positional = positional
+        if positional == "sinusoidal":
+            self.register_buffer("pe", sinusoidal_pe(max_len, d_model), persistent=False)
+            self.pos_emb = None
         else:
-            self.register_buffer("pos", sinusoidal_pe(max_len, d_model), persistent=False)
-        layer = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=True, norm_first=True)
-        self.layers = nn.ModuleList([_clone_layer(layer) for _ in range(num_layers)])
+            self.pos_emb = nn.Parameter(torch.randn(1, max_len, d_model) * 0.02)
+            self.pe = None
+        layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
+            dropout=dropout, batch_first=True, activation="gelu", norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
         self.norm = nn.LayerNorm(d_model)
         self.d_model = d_model
+        self.num_layers = num_layers
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:           # (B,T,C) -> (B,d)
-        h = self.input_proj(x) + self.pos[:, : x.shape[1], :]
-        for blk in self.layers:
-            h = blk(h)
-        return self.norm(h).mean(dim=1)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.input(x)
+        T = h.size(1)
+        if self.pe is not None:
+            h = h + self.pe[:, :T]
+        else:
+            h = h + self.pos_emb[:, :T]
+        h = self.encoder(h)
+        return self.norm(h.mean(dim=1))
 
-    # transfer-learning controls (§3.10.2: lower layers frozen in early epochs when pretrained weights are used)
     def set_frozen_lower(self, fraction: float, frozen: bool) -> None:
-        n = int(round(len(self.layers) * fraction))
-        for mod in [self.input_proj, *self.layers[:n]]:
-            for p in mod.parameters():
-                p.requires_grad = not frozen
-
-
-def _clone_layer(layer: nn.Module) -> nn.Module:
-    import copy
-    new = copy.deepcopy(layer)
-    for p in new.parameters():                                    # deepcopy would share init across layers
-        if p.dim() > 1:
-            nn.init.xavier_uniform_(p)
-    return new
+        n = max(1, int(self.num_layers * fraction))
+        for i, layer in enumerate(self.encoder.layers):
+            for p in layer.parameters():
+                p.requires_grad = not (frozen and i < n)
 
 
 def load_compatible(module: nn.Module, state: Dict[str, torch.Tensor]) -> Dict[str, object]:
-    """Copy tensors whose name and shape match; report what was and was not loaded."""
-    own = module.state_dict()
-    loaded, shape_mismatch, unexpected = [], [], []
+    cur = module.state_dict()
+    load, skip = {}, []
     for k, v in state.items():
-        key = k[len("backbone."):] if k.startswith("backbone.") else k
-        if key not in own:
-            unexpected.append(k)
-        elif own[key].shape != v.shape:
-            shape_mismatch.append(k)
+        if k in cur and cur[k].shape == v.shape:
+            load[k] = v
         else:
-            own[key] = v
-            loaded.append(key)
-    module.load_state_dict(own)
-    return {"loaded": len(loaded), "total_params_tensors": len(own), "shape_mismatch": len(shape_mismatch),
-            "unexpected": len(unexpected)}
+            skip.append(k)
+    missing, unexpected = module.load_state_dict(load, strict=False)
+    return {"loaded": list(load.keys()), "skipped": skip, "missing": list(missing), "unexpected": list(unexpected)}
 
 
-# ---------------------------------------------------------------------------------- heads
 def mlp(d_in: int, d_hidden: int, d_out: int, n_layers: int) -> nn.Sequential:
     layers: List[nn.Module] = []
     d = d_in
-    for _ in range(n_layers - 1):
-        layers += [nn.Linear(d, d_hidden), nn.ReLU()]
+    for i in range(max(1, n_layers - 1)):
+        layers += [nn.Linear(d, d_hidden), nn.ReLU(), nn.Dropout(0.1)]
         d = d_hidden
     layers.append(nn.Linear(d, d_out))
     return nn.Sequential(*layers)
 
 
 class WeibullPHHead(nn.Module):
-    """Weibull-modulated proportional hazards (eq. 4-6).
-
-        S(t|z) = exp( -(t/eta)^beta * exp(r) ),   r = w^T z,   beta > 1
-        h(t|z) = (beta/eta) (t/eta)^(beta-1) exp(r)
-
-    Here t is *remaining* time (cycles). Equivalent to T | z ~ Weibull(beta, eta * exp(-r/beta)), so
-    larger r = higher hazard = shorter RUL. Right-censored samples (event=0) contribute log S only.
-    """
-
     def __init__(self, d_model: int, eta_init: float = 100.0):
         super().__init__()
         self.w = nn.Linear(d_model, 1, bias=False)
@@ -144,7 +126,7 @@ class WeibullPHHead(nn.Module):
 
     @property
     def beta(self) -> torch.Tensor:
-        return 1.0 + F.softplus(self.raw_beta)                    # beta > 1 (wear-out regime)
+        return 1.0 + F.softplus(self.raw_beta)
 
     @property
     def eta(self) -> torch.Tensor:
@@ -165,9 +147,8 @@ class WeibullPHHead(nn.Module):
         return -ll.mean()
 
     def cox_partial_nll(self, t: torch.Tensor, event: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
-        """Eq. 6: negative Cox partial log-likelihood over events (risk set = samples with time >= t_i)."""
         r = self.risk(z)
-        order = torch.argsort(t, descending=True)                 # cumulative logsumexp over the risk set
+        order = torch.argsort(t, descending=True)
         r_s, e_s = r[order], event[order]
         log_risk_set = torch.logcumsumexp(r_s, dim=0)
         n_ev = e_s.sum().clamp(min=1.0)
@@ -175,22 +156,24 @@ class WeibullPHHead(nn.Module):
 
     @torch.no_grad()
     def rul_median(self, z: torch.Tensor) -> torch.Tensor:
-        """Median remaining time: S(t|z)=0.5."""
         return self.eta * (math.log(2.0) / torch.exp(self.risk(z))) ** (1.0 / self.beta)
 
 
 class NADIP(nn.Module):
     def __init__(self, n_channels: int, mcfg: Dict, rul_scale: float = 130.0):
         super().__init__()
-        d, h = mcfg["d_model"], mcfg["head_hidden"]
+        d = int(mcfg["d_model"])
         self.backbone = TimeSeriesTransformer(
-            n_channels, d, mcfg["nhead"], mcfg["num_layers"], mcfg["dim_feedforward"], mcfg["dropout"],
-            mcfg.get("positional", "sinusoidal"))
+            n_channels, d_model=d, nhead=int(mcfg["nhead"]), num_layers=int(mcfg["num_layers"]),
+            dim_feedforward=int(mcfg["dim_feedforward"]), dropout=float(mcfg.get("dropout", 0.1)),
+            positional=str(mcfg.get("positional", "sinusoidal")),
+        )
+        hh = int(mcfg.get("head_hidden", 64))
+        self.rul_head = mlp(d, hh, 1, 2)
+        self.fail_head = mlp(d, hh, 1, 2)
+        self.domain_disc = mlp(d, hh, 1, int(mcfg.get("discriminator_layers", 3)))
+        self.projector = mlp(d, d, 64, int(mcfg.get("projector_layers", 3)))
         self.grl = GradientReversal(1.0)
-        self.rul_head = mlp(d, h, 1, 2)
-        self.fail_head = mlp(d, h, 1, 2)
-        self.domain_disc = mlp(d, h, 1, mcfg.get("discriminator_layers", 3))
-        self.projector = mlp(d, d, 64, mcfg.get("projector_layers", 3))
         self.weibull = WeibullPHHead(d, eta_init=rul_scale * 0.75)
         self.rul_scale = rul_scale
 
@@ -204,22 +187,19 @@ class NADIP(nn.Module):
         z = self.backbone(x)
         return {
             "z": z,
-            "rul": self.rul_head(z).squeeze(-1) * self.rul_scale,   # cycles
+            "rul": self.rul_head(z).squeeze(-1) * self.rul_scale,
             "fail_logit": self.fail_head(z).squeeze(-1),
             "domain_logit": self.domain_disc(self.grl(z)).squeeze(-1),
             "proj": self.projector(z),
         }
 
     def param_groups(self) -> Tuple[List[nn.Parameter], List[nn.Parameter]]:
-        """(everything except the discriminator, discriminator) -- the 'dual Adam' of Table 3.18."""
         disc = list(self.domain_disc.parameters())
         ids = {id(p) for p in disc}
         return [p for p in self.parameters() if id(p) not in ids], disc
 
 
-# ------------------------------------------------------------------------------- losses
 def nt_xent_loss(z1: torch.Tensor, z2: torch.Tensor, temperature: float = 0.5) -> torch.Tensor:
-    """SimCLR NT-Xent over 2N views (cosine similarity, tau = temperature)."""
     z1, z2 = F.normalize(z1, dim=1), F.normalize(z2, dim=1)
     n = z1.size(0)
     z = torch.cat([z1, z2], dim=0)
@@ -230,12 +210,17 @@ def nt_xent_loss(z1: torch.Tensor, z2: torch.Tensor, temperature: float = 0.5) -
 
 
 def masked_mse(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """MSE over rows where mask is True; 0 (with grad graph intact) when no row is labelled."""
+    """MSE over rows where mask is True; 0 when no row is labelled.
+
+    Non-masked targets may be NaN (no RUL); zero them before the difference so NaN*0 never appears.
+    """
     m = mask.float()
     n = m.sum()
     if n.item() == 0:
         return pred.sum() * 0.0
-    return (((pred - target) ** 2) * m).sum() / n
+    tgt = torch.where(mask.bool(), target, torch.zeros_like(target))
+    pr = torch.where(mask.bool(), pred, torch.zeros_like(pred))
+    return (((pr - tgt) ** 2) * m).sum() / n
 
 
 def masked_bce(logit: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -243,4 +228,5 @@ def masked_bce(logit: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) ->
     n = m.sum()
     if n.item() == 0:
         return logit.sum() * 0.0
-    return (F.binary_cross_entropy_with_logits(logit, target, reduction="none") * m).sum() / n
+    tgt = torch.where(mask.bool(), target, torch.zeros_like(target))
+    return (F.binary_cross_entropy_with_logits(logit, tgt, reduction="none") * m).sum() / n
