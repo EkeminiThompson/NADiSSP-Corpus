@@ -128,3 +128,13 @@ def test_w3_real_format_class9_and_unlabelled_rows(tmp_path):
     assert s.fail.max() == 1                              # class 9 counts as an undesirable event
     assert set(np.unique(s.event_class)) <= set(range(10))
     assert s.meta["provenance"] == "real"
+
+
+def test_published_espset_spectra_are_rejected_with_explanation(tmp_path):
+    import pytest
+    from src.data.loaders import load_espset, DatasetNotFound
+    d = tmp_path / "ESPset"; d.mkdir()
+    (d / "spectrum.csv").write_text("0;1;2\n")
+    (d / "features.csv").write_text("esp_id,label\n1,0\n")
+    with pytest.raises(DatasetNotFound, match="frequency-domain"):
+        load_espset(tmp_path)

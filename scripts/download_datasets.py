@@ -4,7 +4,7 @@
   CMAPSS   NASA PCoE repository      -> data/raw/CMAPSS/{train,test,RUL}_FD00x.txt
   AI4I     UCI repository (id 601)   -> data/raw/AI4I/ai4i2020.csv
   3W       github.com/petrobras/3W   -> data/raw/3W/   (sparse clone: dataset/ only)
-  ESPset   github.com/NINFA-UFES/ESPset + Mendeley/Zenodo DOI -> data/raw/ESPset/*.csv (see README for columns)
+  ESPset   NOT USED: published only as spectra (spectrum.csv), no time axis; see README
 
 Use --verify to print SHA-256 sums of what is present so a run can be tied to exact files.
 """
@@ -43,6 +43,6 @@ if __name__ == "__main__":
     else:
         clone_3w()
         print(__doc__)
-        for d, f in (("CMAPSS", "train_FD001.txt"), ("AI4I", "ai4i2020.csv"), ("ESPset", None)):
+        for d, f in (("CMAPSS", "train_FD001.txt"), ("AI4I", "ai4i2020.csv")):
             ok = (RAW / d / f).exists() if f else any((RAW / d).glob("*.csv")) if (RAW / d).exists() else False
             print(f"  {d:7s}: {'present' if ok else 'MISSING - download manually (see above)'}")

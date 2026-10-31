@@ -52,7 +52,7 @@ VARIANTS: Dict[str, Variant] = {v.name: v for v in [
     Variant("no_pretrain", use_pretrained=False,
             description="Ablation 4: random initialisation. Differs from the full model only when "
                         "model.pretrained_init supplies compatible weights"),
-    Variant("no_3w_espset", datasets=("cmapss", "ai4i"), description="Ablation 5: CMAPSS + AI4I only"),
+    Variant("no_3w_espset", datasets=("cmapss", "ai4i"), description="Ablation 5: CMAPSS + AI4I only (i.e. without 3W; ESPset is not part of this study)"),
     Variant("no_xgb", use_xgb=False, description="Remove XGBoost ensemble (transformer only)"),
 ]}
 

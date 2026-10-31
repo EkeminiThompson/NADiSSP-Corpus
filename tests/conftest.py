@@ -16,7 +16,9 @@ from src.training.data import Bundle  # noqa: E402
 
 @pytest.fixture(scope="session")
 def cfg():
-    return load_config(str(ROOT / "configs" / "smoke.yaml"))
+    # the synthetic fixtures include ESPset-style time series, so tests keep exercising that stressor matrix row
+    # even though the real study excludes ESPset (configs/nadip.yaml)
+    return load_config(str(ROOT / "configs" / "smoke.yaml"), ["data.datasets=[cmapss,ai4i,w3,espset]"])
 
 
 @pytest.fixture(scope="session")

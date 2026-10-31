@@ -8,7 +8,7 @@ section/table to the code that implements it and lists where the document disagr
 
 | Stage | Code | Dissertation |
 |---|---|---|
-| Load CMAPSS FD001-4, AI4I 2020, 3W 2.0.0, ESPset | `src/data/loaders.py` | §3.4, Table 3.6b |
+| Load CMAPSS FD001-4, AI4I 2020, 3W 2.0.0 (ESPset excluded, see below) | `src/data/loaders.py` | §3.4, Table 3.6b |
 | Unified 41-slot channel vector, per-dataset blocks | `src/data/schema.py` | §3.4 |
 | Stratified sampling (min cell 30; 3W >= 70% real), group-wise splits | `src/data/sampling.py`, `corpus.py` | Tables 3.8, 3.13 |
 | Six Nigerian stressors, applied per Table 3.9b by sensor role | `src/data/augmentation.py` | §3.4.3 |
@@ -35,15 +35,18 @@ Datasets are not redistributed. Put them under `data/raw/` (or pass `--raw-dir`)
 data/raw/CMAPSS/{train,test,RUL}_FD00{1..4}.txt
 data/raw/AI4I/ai4i2020.csv
 data/raw/3W/dataset/<class>/{WELL-*,SIMULATED_*,DRAWN_*}.parquet     # petrobras/3W v2.0.0; DRAWN_* are skipped
-data/raw/ESPset/*.csv                                                # see below
 ```
 
 `python scripts/download_datasets.py` fetches what is scriptable (3W sparse clone) and says where to put the rest;
 `--verify` prints SHA-256 sums so a run can be tied to exact files.
 
-**ESPset** columns are matched case-insensitively against aliases (`src/data/loaders.py::ESP_ALIASES`):
-vibration x/y/z (`vib_x`, `vibration_x`, `ax`...), motor current, discharge/intake pressure, motor temperature,
-frequency; a unit column (`unit`, `esp`, `well`...) and a label column (`fault`, `class`, `label`...).
+**ESPset is not used.** It is published (NINFA-UFES/ESPset) only as `spectrum.csv` (6,032 vibration spectra x
+12,103 frequency bins, normalised by rotation frequency) plus `features.csv` (labels and summary features). There is
+no time axis and no pressure/current/temperature channel, so it cannot feed a time-series model without inventing a
+signal, and no ESPset result is reported. The study uses CMAPSS and AI4I as source domains and 3W as the real-facility
+data. `data.datasets` in `configs/nadip.yaml` omits it; its channel slots stay in the 41-wide vector as inert zeros so
+checkpoints and tests keep a fixed shape. The loader refuses `spectrum.csv`/`features.csv` with an explanatory error.
+The `no_3w_espset` ablation therefore removes 3W only: describe it as "without 3W" in the text.
 
 **3W notes (checked against the real v2.0.0 files).** Classes are 0 (normal), 1-9 (events) and 101-109
 (transients). Only the seven Table 3.6b sensors are used. Several are mostly absent in real wells
@@ -77,7 +80,7 @@ Config lives in `configs/nadip.yaml` (every value is commented with its section/
 * **Projected, not measured:** latency on the Table 4.10 edge devices (Jetson, Raspberry Pi etc.) and anything
   involving a live Nigerian facility. The economic model is a simulation whose incident reduction is
   `efficacy (0.70) x measured AUPRC`; deployment capex/opex default to 0 until you set them.
-* **Not run in the authoring environment:** CMAPSS, AI4I and ESPset were unreachable there, so no full-scale
+* **Not run in the authoring environment:** CMAPSS and AI4I were unreachable there, so no full-scale
   result accompanies this commit. Only the 3W loader and corpus build were validated on real data. The tests use
   synthetic fixtures. Run the full protocol where the datasets are available.
 

@@ -234,8 +234,12 @@ def _first_col(df: pd.DataFrame, names: List[str]) -> Optional[str]:
 def load_espset(raw_dir: Path) -> List[Series]:
     root = Path(raw_dir) / "ESPset"
     files = sorted(root.rglob("*.csv"))
+    if any(f.name in ("spectrum.csv", "features.csv") for f in files):
+        raise DatasetNotFound(
+            "ESPset as published (spectrum.csv / features.csv, NINFA-UFES) is frequency-domain data with no time axis; "
+            "this pipeline needs time-series sensor channels, so it is not used. See README.")
     if not files:
-        raise DatasetNotFound(f"No ESPset CSV under {root}. See README (ESPset layout) for the accepted columns.")
+        raise DatasetNotFound(f"No ESPset CSV under {root}. Only time-series ESPset-like CSVs are accepted (see README).")
     names = channel_names("espset")
     out: List[Series] = []
     for f in files:
