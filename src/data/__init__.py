@@ -1,8 +1,7 @@
-from .loaders import load_cmapss, load_ai4i, load_espset, load_3w
-from .augmentation import NigerianAugmentor
-from .dataset import PdMDataset, build_combined_corpus
+"""Data layer: loaders, preprocessing, Nigerian augmentation, sampling and the corpus builder."""
 
-__all__ = [
-    "load_cmapss", "load_ai4i", "load_espset", "load_3w",
-    "NigerianAugmentor", "PdMDataset", "build_combined_corpus"
-]
+from .schema import DATASETS, N_CHANNELS, STRESSORS
+from .corpus import build_corpus, load_corpus
+from .augmentation import NigerianAugmentor
+
+__all__ = ["DATASETS", "N_CHANNELS", "STRESSORS", "build_corpus", "load_corpus", "NigerianAugmentor"]
