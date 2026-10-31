@@ -1,70 +1,71 @@
-# NADIP / NADiSSP-Corpus
+# NADiP — Nigerian-Adapted Domain-Invariant Prognostics
 
-**Nigerian-Adapted Domain-Invariant Prognostic (NADIP) Framework**
+Implementation of the NADiP methodology (dissertation Chapters 3–4): multi-stage domain-adaptive prognostics for predictive maintenance under Nigerian operating conditions.
 
-Transfer learning + domain adaptation for PdM under simulated Nigerian stressors, with held-out evaluation on **real Petrobras 3W** (WELL-*.parquet) when installed.
+All reported metrics are produced by executing the pipeline on the configured datasets. Configuration is in `configs/nadip.yaml`. Mapping from dissertation sections to code is in `docs/ALIGNMENT.md`.
 
-**Author:** Ekemini Thompson · Nnamdi Azikiwe University, Awka · 2023517003FA · 2026
+## Pipeline overview
 
----
+| Stage | Code | Dissertation |
+|---|---|---|
+| Load CMAPSS FD001–4, AI4I 2020, 3W 2.0.0, ESPset | `src/data/loaders.py` | §3.4, Table 3.6b |
+| Unified channel schema (per-dataset blocks) | `src/data/schema.py` | §3.4 |
+| Stratified sampling; group-wise train/val/test splits | `src/data/sampling.py`, `corpus.py` | Tables 3.8, 3.13 |
+| Nigerian stressors (role-conditioned) | `src/data/augmentation.py` | §3.4.3 |
+| Stage 2 — SimCLR (NT-Xent, physics-informed views) | `src/training/runner.py` | §3.10 |
+| Stage 3 — Joint GRL domain adaptation | `src/training/runner.py` | §3.10 |
+| Stage 4 — Weibull-modulated survival head | `src/models/nadip.py` | eq. 6 |
+| Stage 5 — XGBoost on frozen embeddings | `src/training/runner.py` | §3.10 |
+| Ablations (12 variants), multi-seed statistics | `src/training/variants.py`, `src/evaluation/stats.py` | Tables 4.3–4.4 |
+| Domain diagnostics (MMD, Wasserstein, discriminator) | `src/evaluation/diagnostics.py` | §4.2 |
+| TreeSHAP explanations | `src/evaluation/explain.py` | §4.6 |
+| Monte-Carlo economic evaluation | `src/evaluation/economic.py` | Table 4.9a |
+| Deployment stress tests, ONNX export | `src/evaluation/deployment.py` | §4.8–4.10 |
+| Inference service (FastAPI) | `src/serving/app.py`, `Dockerfile` | Table 3.15b |
 
-## Honest data inventory
+Protocol constraints enforced by tests: splits are by group (unit/well/series), not by window; the normaliser is fit on clean source training windows only; target labels are partially masked; stressors apply only to matching sensor roles.
 
-| Dataset | Nature | Role |
-|---------|--------|------|
-| NASA CMAPSS | **Simulated** turbofan | Source (RUL + soft fail) |
-| UCI AI4I 2020 | **Synthetic** manufacturing | Source (failure labels; no RUL) |
-| ESPset | Public ESP (if installed) | Optional source |
-| **Petrobras 3W WELL-*** | **Real** offshore events | **Held-out target** for event detection (AUPRC/F1). **No RUL.** |
-| Nigerian-augmented windows | Physics-informed **synthetic** shift | Intermediate domain for GRL — **not** Nigerian plant data |
+## Data layout
 
-Older `processed/FULL_43K_SUMMARY.txt` labels ("CMAPSS real", "3W-style synth") are **incorrect** for facility claims. Rebuild after placing real 3W.
+Datasets are not redistributed. Place them under `data/raw/`:
 
----
+```
+data/raw/CMAPSS/{train,test,RUL}_FD00{1..4}.txt
+data/raw/AI4I/ai4i2020.csv
+data/raw/3W/dataset/<class>/{WELL-*,SIMULATED_*}.parquet   # petrobras/3W v2.0.0
+data/raw/ESPset/*.csv
+```
 
-## What the code supports (post-critique fix)
-
-1. **Masked losses** — RUL only where `has_rul=1`; fail only where `has_fail=1`.
-2. **Unit-level splits** — no overlapping-window train/val leakage.
-3. **3W protocol** — only `WELL-*.parquet` (skips SIMULATED_*, DRAWN_*); event labels; **never invents RUL=100**.
-4. **Economics** — explicit effectiveness + deployment cost. Default NPV is **~$200M / 5y class**, not $892M.
-5. **Latency / packet-loss** — **not implemented**. Do not claim sub-120 ms.
-
----
+```bash
+python scripts/download_datasets.py
+python scripts/download_datasets.py --verify
+```
 
 ## Quick start
 
 ```bash
-git clone https://github.com/EkeminiThompson/NADiSSP-Corpus.git
-cd NADiSSP-Corpus
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+python -m pytest -q tests
 
-# Real 3W (WELL-* = real wells)
-mkdir -p data/raw
-git clone --depth 1 https://github.com/petrobras/3W.git data/raw/3W
+python scripts/prepare_corpus.py --config configs/smoke.yaml
+python scripts/run_all.py --config configs/smoke.yaml --seeds 2
 
-# Add CMAPSS + AI4I under data/raw/ (see scripts/download_datasets.py)
-
-python scripts/prepare_corpus.py
-python scripts/train_nadip.py --epochs 40
-python scripts/evaluate.py          # RUL on CMAPSS test; AUPRC on 3w_real test
-python scripts/run_economic.py      # reports ~$200M-class NPV under defaults
+# Full protocol (GPU recommended)
+python scripts/prepare_corpus.py --config configs/nadip.yaml
+python scripts/run_all.py --config configs/nadip.yaml
 ```
 
-Report metrics from `results/tables/*.json` only.
+Outputs are written under `results/` (`evaluation.json`, `economics_summary.json`, `tables.md`, figures).
 
----
+## Economic evaluation
 
-## Claims to drop until results/ backs them
+Incident rates and cost parameters follow Table 4.9a. Annual TCO and five-year NPV are computed by Monte-Carlo simulation in `src/evaluation/economic.py`. The NADiP incident rate is derived from measured AUPRC unless overridden in config. Results are written to `results/economics_summary.json`.
 
-- "$892M NPV", "incidents 4.7→1.9" (1.9 was hardcoded)
-- "First" transfer to real oil & gas
-- Sub-120 ms / 40% packet-loss resilience
-- Kinetics-400 init, Weibull PH head, staged 100+50+20 schedule
-- CMAPSS or AI4I as real plant data
+## Citation
 
----
+If you use this code, please cite the dissertation and the upstream datasets (NASA CMAPSS, UCI AI4I 2020, Petrobras 3W).
 
-## License
+## Licence
 
-MIT (code). Datasets: NASA, UCI, Petrobras 3W CC BY 4.0.
+See repository licence file. Upstream datasets retain their original terms.
