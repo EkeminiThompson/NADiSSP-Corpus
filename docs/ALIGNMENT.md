@@ -10,7 +10,7 @@
 | Learning rate | 1e-3 vs 3e-4 -> 1e-5 | cosine 3e-4 -> 1e-5 | `stage3_joint.lr_start/lr_end` |
 | Survival head | Weibull NLL vs Cox partial likelihood (eq. 6) | Weibull-modulated PH (beta > 1) as default; Cox partial likelihood available | `stage4_weibull.loss` |
 | Stressor assignment | §3.4.3 vs Table 3.9b differ | Table 3.9b, by sensor role | `augmentation.matrix` |
-| ESPset | four source datasets incl. ESPset (8 channels: vibration x/y/z, current, pressures, temperature, frequency) | Excluded. The published ESPset has vibration spectra only (no time axis, no other channels), so those channels do not exist. `no_3w_espset` removes 3W only | `data.datasets` |
+| ESPset | four source datasets incl. ESPset (8 time-series channels: vibration x/y/z, current, pressures, temperature, frequency) | Published ESPset has only vibration spectra (no time axis, none of those other channels). Not in the default corpus. Used (1) as a separate frequency-domain fault-diagnosis experiment and (2) optionally as a 50-band frequency sweep in the unified model with no time stressors. The dissertation's ESPset channel description must be corrected | `espset.*`, `data.datasets` |
 | 3W event types | "8 event types" | 9 classes (1-9) + transients 101-109, as in 3W 2.0.0 | n/a |
 | Economics | Table 4.9b totals vs Table 4.9a parameters | Table 4.9a simulated as written (lognormal downtime cost, Poisson incidents drawn per year, 5% discount, 5-year horizon). 4.9b totals are not reproduced; see below | `economics.*` |
 | Incident SD | "4.7 +/- 1.2" | Poisson SD is about 2.2 for the same mean; the simulation uses Poisson | `economics.*` |

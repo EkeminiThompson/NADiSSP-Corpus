@@ -100,3 +100,25 @@ def make_all(root: Path, seed: int = 0) -> Path:
     make_w3(root, rng)
     make_espset(root, rng)
     return root
+
+
+def make_espset_spectra(root: Path, rng: np.random.Generator, n_pumps: int = 18, per_pump: int = 8,
+                        labels=("normal", "unbalance", "misalignment")) -> None:
+    """Published ESPset layout: ESPset/spectrum.csv (';', no header, 12103 cols, 1X at col 3003) + features.csv."""
+    d = root / "ESPset"; d.mkdir(parents=True, exist_ok=True)
+    F, one_x = 12103, 3003
+    freq = (np.arange(F) + 1) / one_x
+    rows, feats = [], []
+    for p in range(n_pumps):
+        pump_label = labels[p % len(labels)]
+        for _ in range(per_pump):
+            s = 0.05 * np.exp(-freq) + 0.01 * rng.random(F)
+            s[one_x - 1] += 0.5 + (0.6 if pump_label == "unbalance" else 0.0) + 0.05 * rng.random()
+            s[2 * one_x - 1] += 0.1 + (0.5 if pump_label == "misalignment" else 0.0) + 0.05 * rng.random()
+            rows.append(s.astype(np.float32))
+            feats.append({"esp_id": 100 + p, "label": pump_label, "median(8,13)": float(s[240:390].mean()),
+                          "median(98,102)": float(s[2940:3060].mean()), "a": -1.0 + 0.1 * rng.random(), "b": rng.random(),
+                          "peak1x": float(s[one_x - 1]), "peak2x": float(s[2 * one_x - 1]),
+                          "rms(98,102)": float(np.sqrt((s[2940:3060] ** 2).mean()))})
+    np.savetxt(d / "spectrum.csv", np.stack(rows), delimiter=";", fmt="%.5f")
+    pd.DataFrame(feats).to_csv(d / "features.csv", index=False)

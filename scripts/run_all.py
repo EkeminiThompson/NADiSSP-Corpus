@@ -22,6 +22,12 @@ if __name__ == "__main__":
     steps = [("prepare_corpus.py", common + (["--raw-dir", a.raw_dir] if a.raw_dir else [])),
              ("run_ablation.py", common + (["--seeds", str(a.seeds)] if a.seeds else [])),
              ("evaluate.py", common), ("run_economics.py", common), ("deployment_sim.py", common), ("make_figures.py", common)]
+    from src.config import load_config, resolve_path
+    from src.data.espset_spectral import has_published_files
+    raw = a.raw_dir or resolve_path(load_config(a.config, a.overrides), "raw_dir")
+    if has_published_files(raw):                     # separate frequency-domain experiment, only if the files exist
+        steps.insert(1, ("espset_experiment.py", common + (["--raw-dir", a.raw_dir] if a.raw_dir else [])
+                         + (["--seeds", str(a.seeds)] if a.seeds else [])))
     for script, args in steps:
         print(f"\n########## {script}", flush=True)
         subprocess.run([sys.executable, str(HERE / script), *args], check=True)

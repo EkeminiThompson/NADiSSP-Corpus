@@ -18,8 +18,10 @@ paths:
 data:
   window: 50                     # Table 3.13 (sequence length, cycles)
   stride: 1                      # Table 3.13
-  # ESPset is excluded: it is published only as frequency-domain spectra (spectrum.csv, 6032 x 12103) with no
-  # time axis, so it cannot feed a time-series model without inventing a signal. Its counts/blocks below are inert.
+  # ESPset is published only as frequency-domain spectra (spectrum.csv 6032 x 12103 + features.csv), no time axis.
+  # It is therefore NOT in the default time-series corpus. Two opt-in uses (see `espset:` below and the README):
+  #   * scripts/espset_experiment.py  -- separate spectral fault-classification experiment (no config change needed)
+  #   * add `espset` to this list AND set espset.mode: bands -- unified model sees it as a 50-step frequency sweep
   datasets: [cmapss, ai4i, w3]
   cmapss_subsets: [FD001, FD002, FD003, FD004]
   use_op_settings: false         # §3.3.1: 21 sensors only
@@ -159,3 +161,14 @@ deployment:
   cache_limit_hours: 72          # §3.9 edge layer: 72-hour cache
   drift_max_std: 0.8             # SIMULATION knob: sensor drift (std units) reached after a quarter-long outage
   edge_cache_above_loss: 0.30    # Fig. 3.2: offline cache path above 30% packet loss
+
+espset:                          # frequency-domain ESPset (NINFA-UFES); only used when opted in
+  mode: "off"                    # off | bands  (bands: spectra -> n_bands frequency steps for the unified model)
+  n_bands: 50                    # must be >= data.window; steps are FREQUENCY bands, not time
+  normal_labels: [normal, healthy, ok, good, none, "0"]   # case-insensitive; set to the label(s) meaning "no fault"
+  experiment:                    # scripts/espset_experiment.py
+    n_seeds: 10                  # repeated group-wise splits by esp_id (no pump in two splits)
+    split: {val: 0.15, test: 0.15}
+    pool_bins: 1210              # spectrum mean-pooled to this many bins for the spectral XGBoost / CNN
+    xgb: {n_estimators: 300, max_depth: 6, learning_rate: 0.1}
+    cnn: {epochs: 30, batch_size: 128, lr: 1.0e-3, channels: 32, patience: 5}

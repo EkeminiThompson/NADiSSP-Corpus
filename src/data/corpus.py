@@ -42,6 +42,8 @@ def _strata(name: str, cand: Dict[str, np.ndarray], series: List[Series]) -> np.
     if name == "cmapss":
         subset = np.array([series[i].meta["subset"] for i in cand["s"]])
         return np.char.add(np.char.add(subset.astype(str), "|"), health.astype(str))
+    if name == "espset" and series[0].meta.get("mode") == "bands":
+        return ev.astype(str)                               # frequency-sweep ESPset: stratify by fault class only
     if name == "espset":
         return np.char.add(ev.astype(str), np.char.add("|", cand["group"].astype(str)))
     return ev.astype(str)                                   # ai4i: failure type; w3 handled separately

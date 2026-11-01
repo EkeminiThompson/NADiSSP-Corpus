@@ -231,13 +231,19 @@ def _first_col(df: pd.DataFrame, names: List[str]) -> Optional[str]:
     return None
 
 
-def load_espset(raw_dir: Path) -> List[Series]:
+def load_espset(raw_dir: Path, cfg: Optional[Dict] = None) -> List[Series]:
     root = Path(raw_dir) / "ESPset"
     files = sorted(root.rglob("*.csv"))
     if any(f.name in ("spectrum.csv", "features.csv") for f in files):
+        # published ESPset = frequency-domain spectra with no time axis
+        espcfg = (cfg or {}).get("espset", {})
+        if espcfg.get("mode", "off") == "bands":
+            from .espset_spectral import load_espset_bands
+            return load_espset_bands(raw_dir, espcfg, (cfg or {}).get("data", {}).get("window", 50))
         raise DatasetNotFound(
-            "ESPset as published (spectrum.csv / features.csv, NINFA-UFES) is frequency-domain data with no time axis; "
-            "this pipeline needs time-series sensor channels, so it is not used. See README.")
+            "ESPset as published (spectrum.csv / features.csv, NINFA-UFES) is frequency-domain data with no time axis, "
+            "so it is not part of the time-series corpus. Use scripts/espset_experiment.py for the separate spectral "
+            "experiment, or set espset.mode=bands to feed it to the unified model as a frequency sweep (see README).")
     if not files:
         raise DatasetNotFound(f"No ESPset CSV under {root}. Only time-series ESPset-like CSVs are accepted (see README).")
     names = channel_names("espset")
@@ -295,7 +301,7 @@ def load_all(raw_dir: Path, cfg: Dict):
         "cmapss": lambda: load_cmapss(raw_dir, d["cmapss_subsets"], d["critical_rul"], d["early_degradation_rul"]),
         "ai4i": lambda: load_ai4i(raw_dir),
         "w3": lambda: load_w3(raw_dir, d["w3_half_width"], d["window"]),
-        "espset": lambda: load_espset(raw_dir),
+        "espset": lambda: load_espset(raw_dir, cfg),
     }
     found: Dict[str, List[Series]] = {}
     missing: Dict[str, str] = {}

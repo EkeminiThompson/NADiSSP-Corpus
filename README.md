@@ -40,13 +40,25 @@ data/raw/3W/dataset/<class>/{WELL-*,SIMULATED_*,DRAWN_*}.parquet     # petrobras
 `python scripts/download_datasets.py` fetches what is scriptable (3W sparse clone) and says where to put the rest;
 `--verify` prints SHA-256 sums so a run can be tied to exact files.
 
-**ESPset is not used.** It is published (NINFA-UFES/ESPset) only as `spectrum.csv` (6,032 vibration spectra x
-12,103 frequency bins, normalised by rotation frequency) plus `features.csv` (labels and summary features). There is
-no time axis and no pressure/current/temperature channel, so it cannot feed a time-series model without inventing a
-signal, and no ESPset result is reported. The study uses CMAPSS and AI4I as source domains and 3W as the real-facility
-data. `data.datasets` in `configs/nadip.yaml` omits it; its channel slots stay in the 41-wide vector as inert zeros so
-checkpoints and tests keep a fixed shape. The loader refuses `spectrum.csv`/`features.csv` with an explanatory error.
-The `no_3w_espset` ablation therefore removes 3W only: describe it as "without 3W" in the text.
+**ESPset is frequency-domain data.** NINFA-UFES/ESPset publishes `spectrum.csv` (6,032 vibration spectra x
+12,103 frequency bins, 1X at column 3003) and `features.csv` (`esp_id`, `label`, summary features). There is no time
+axis and no pressure/current/temperature channel, so it is **not** part of the default time-series corpus
+(`data.datasets` omits it). Put both files in `data/raw/ESPset/`. Label names are not assumed: set
+`espset.normal_labels` to the label(s) meaning "no fault"; loading stops and lists the labels if none match.
+Two opt-in uses, which the paper must describe as what they are:
+
+1. **Separate spectral experiment** (`python scripts/espset_experiment.py`, also run by `run_all.py` when the files
+   exist). Fault-vs-normal and fault-class diagnosis with (a) `features.csv` + XGBoost, (b) the pooled spectrum +
+   XGBoost, (c) a 1-D CNN over the spectrum. Repeated group-wise splits by `esp_id` (no pump in two splits),
+   threshold chosen on validation only, paired t-test / Cohen's d_z / 95% CI. Output: `results/espset/tables.md`.
+   Report it in its own table, as a frequency-domain result.
+2. **Unified-model frequency sweep** (`data.datasets: [cmapss, ai4i, w3, espset]` and `espset.mode: bands`). Each
+   spectrum becomes 50 frequency bands (mean and max log-amplitude in two vibration channels). The steps are
+   frequency bands, not time, so no time-domain stressor is applied, there is no Nigerian-augmented target for it
+   (set `data.target_counts.espset: 0`, and `augmentation.matrix.espset: []`), and it has no RUL. Describe it as a
+   "frequency-sweep input", never as a time series.
+
+The `no_3w_espset` ablation removes 3W (and ESPset when present) from training; state which datasets were present.
 
 **3W notes (checked against the real v2.0.0 files).** Classes are 0 (normal), 1-9 (events) and 101-109
 (transients). Only the seven Table 3.6b sensors are used. Several are mostly absent in real wells
@@ -80,7 +92,7 @@ Config lives in `configs/nadip.yaml` (every value is commented with its section/
 * **Projected, not measured:** latency on the Table 4.10 edge devices (Jetson, Raspberry Pi etc.) and anything
   involving a live Nigerian facility. The economic model is a simulation whose incident reduction is
   `efficacy (0.70) x measured AUPRC`; deployment capex/opex default to 0 until you set them.
-* **Not run in the authoring environment:** CMAPSS and AI4I were unreachable there, so no full-scale
+* **Not run in the authoring environment:** CMAPSS, AI4I and ESPset were unreachable there, so no full-scale
   result accompanies this commit. Only the 3W loader and corpus build were validated on real data. The tests use
   synthetic fixtures. Run the full protocol where the datasets are available.
 
