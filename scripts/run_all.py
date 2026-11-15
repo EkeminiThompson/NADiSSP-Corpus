@@ -1,5 +1,9 @@
 #!/usr/bin/env python
-"""Whole pipeline: corpus -> ablation (all variants x seeds) -> evaluation -> economics -> deployment -> figures."""
+"""Whole pipeline: corpus -> ablation (all variants x seeds) -> evaluation -> economics -> deployment -> figures.
+
+    python scripts/run_all.py                              # full protocol (hours on CPU; needs the datasets)
+    python scripts/run_all.py --config configs/smoke.yaml --raw-dir <synthetic fixtures>   # plumbing check only
+"""
 import argparse
 import subprocess
 import sys

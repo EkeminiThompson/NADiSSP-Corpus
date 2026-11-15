@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Train one variant (default: full NADiP) for one or more seeds."""
+"""Train one variant (default: the full NADIP) for one or more seeds, with stage checkpointing/resume."""
 import argparse
 import _boot  # noqa: F401
 from src.config import add_common_args, load_config

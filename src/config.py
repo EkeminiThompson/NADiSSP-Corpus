@@ -1,7 +1,7 @@
 """Configuration loading.
 
 configs/nadip.yaml holds every document-specified value. A second YAML (e.g. configs/smoke.yaml)
-is deep-merged on top, and dotted CLI overrides on top of that.
+is deep-merged on top, and dotted CLI overrides ("training.stage3_joint.epochs=5") on top of that.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ def _coerce(value: str) -> Any:
 
 
 def _fix_floats(node: Any) -> Any:
+    """PyYAML reads `8.4e6` (no exponent sign) as a string; turn such strings back into numbers."""
     if isinstance(node, dict):
         return {k: _fix_floats(v) for k, v in node.items()}
     if isinstance(node, list):

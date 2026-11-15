@@ -1,86 +1,80 @@
-"""
-Core evaluation metrics used in Chapter 4.
+"""Prognostic metrics (Table 3.19): AUPRC, RUL RMSE, F1, evaluated per split / domain / dataset.
+
+The F1 operating threshold is chosen on the VALIDATION split (never on test), then frozen.
 """
 
 from __future__ import annotations
-from typing import Dict, Optional, Tuple
+
+from typing import Dict, Optional
 
 import numpy as np
-from sklearn.metrics import (
-    average_precision_score,
-    f1_score,
-    mean_squared_error,
-    precision_recall_curve,
-)
+from sklearn.metrics import average_precision_score, f1_score, precision_recall_curve
+
+from ..data.schema import DATASETS, DATASET_ID
 
 
-def compute_mmd(
-    X: np.ndarray,
-    Y: np.ndarray,
-    gamma: Optional[float] = None,
-    max_samples: int = 2000,
-) -> float:
-    """
-    Biased MMD with RBF kernel (Gretton et al.).
-    Subsamples for speed when N is large.
-    """
-    rng = np.random.default_rng(42)
-    if len(X) > max_samples:
-        X = X[rng.choice(len(X), max_samples, replace=False)]
-    if len(Y) > max_samples:
-        Y = Y[rng.choice(len(Y), max_samples, replace=False)]
-
-    def rbf(a, b, g):
-        sq = np.sum((a[:, None, :] - b[None, :, :]) ** 2, axis=-1)
-        return np.exp(-g * sq)
-
-    if gamma is None:
-        Z = np.vstack([X[:500], Y[:500]])
-        d = np.sum((Z[:, None, :] - Z[None, :, :]) ** 2, axis=-1)
-        med = np.median(d[d > 0])
-        gamma = 1.0 / (2 * med) if med > 0 else 1.0
-
-    Kxx = rbf(X, X, gamma)
-    Kyy = rbf(Y, Y, gamma)
-    Kxy = rbf(X, Y, gamma)
-    m, n = len(X), len(Y)
-    mmd2 = Kxx.sum() / (m * m) + Kyy.sum() / (n * n) - 2 * Kxy.sum() / (m * n)
-    return float(np.sqrt(max(mmd2, 0.0)))
+def auprc(y: np.ndarray, p: np.ndarray) -> float:
+    y = np.asarray(y)
+    if len(y) == 0 or y.min() == y.max():
+        return float("nan")                                   # undefined without both classes -- never reported as 0
+    return float(average_precision_score(y, p))
 
 
-def compute_wasserstein(X: np.ndarray, Y: np.ndarray, max_samples: int = 1500) -> float:
-    """
-    Approximate 1-Wasserstein via average per-dimension 1-D Wasserstein
-    (scipy). Fast proxy used in the dissertation tables.
-    """
-    from scipy.stats import wasserstein_distance
-
-    rng = np.random.default_rng(42)
-    if len(X) > max_samples:
-        X = X[rng.choice(len(X), max_samples, replace=False)]
-    if len(Y) > max_samples:
-        Y = Y[rng.choice(len(Y), max_samples, replace=False)]
-
-    dims = min(X.shape[1], Y.shape[1])
-    dists = [wasserstein_distance(X[:, i], Y[:, i]) for i in range(dims)]
-    return float(np.mean(dists))
+def best_f1_threshold(y: np.ndarray, p: np.ndarray) -> float:
+    if len(y) == 0 or y.min() == y.max():
+        return 0.5
+    prec, rec, thr = precision_recall_curve(y, p)
+    f1 = 2 * prec[:-1] * rec[:-1] / np.clip(prec[:-1] + rec[:-1], 1e-12, None)
+    return float(thr[int(np.argmax(f1))]) if len(thr) else 0.5
 
 
-def evaluate_predictions(
-    y_true_rul: np.ndarray,
-    y_pred_rul: np.ndarray,
-    y_true_fail: np.ndarray,
-    y_pred_fail_proba: np.ndarray,
-) -> Dict[str, float]:
-    """Standard PdM metrics reported in Chapter 4."""
-    rmse = float(np.sqrt(mean_squared_error(y_true_rul, y_pred_rul)))
-    results = {"rul_rmse": rmse}
+def f1_at(y: np.ndarray, p: np.ndarray, thr: float) -> float:
+    if len(y) == 0 or y.min() == y.max():
+        return float("nan")
+    return float(f1_score(y, (p >= thr).astype(int), zero_division=0))
 
-    if y_true_fail.min() != y_true_fail.max():
-        results["auprc"] = float(average_precision_score(y_true_fail, y_pred_fail_proba))
-        pred_bin = (y_pred_fail_proba >= 0.5).astype(int)
-        results["f1"] = float(f1_score(y_true_fail, pred_bin, zero_division=0))
-    else:
-        results["auprc"] = float("nan")
-        results["f1"] = float("nan")
-    return results
+
+def rul_rmse(y: np.ndarray, pred: np.ndarray, mask: np.ndarray) -> float:
+    m = np.asarray(mask, dtype=bool)
+    if m.sum() == 0:
+        return float("nan")
+    return float(np.sqrt(np.mean((np.asarray(y)[m] - np.asarray(pred)[m]) ** 2)))
+
+
+def score_rows(out: Dict[str, np.ndarray], bundle, rows: np.ndarray, thr: float, key_rul: str = "rul") -> Dict:
+    y = bundle.fail[rows].numpy()
+    has = bundle.has_rul[rows].numpy()
+    return {
+        "n": int(len(rows)),
+        "fail_prevalence": float(y.mean()) if len(y) else float("nan"),
+        "auprc": auprc(y, out["fail_prob"]),
+        "f1": f1_at(y, out["fail_prob"], thr),
+        "rul_rmse": rul_rmse(bundle.rul[rows].numpy(), out[key_rul], has),
+        "n_with_rul": int(has.sum()),
+    }
+
+
+def evaluate(trained, bundle, split: str = "test", threshold: Optional[float] = None) -> Dict:
+    """Overall, per-domain and per-dataset scores on `split`. Threshold: best-F1 on validation."""
+    rows_val = bundle.idx("val")
+    if threshold is None:
+        ov = trained.predict(bundle.X[rows_val], bundle.dataset[rows_val]) if len(rows_val) else None
+        threshold = best_f1_threshold(bundle.fail[rows_val].numpy(), ov["fail_prob"]) if ov is not None else 0.5
+    rows = bundle.idx(split)
+    out = trained.predict(bundle.X[rows], bundle.dataset[rows])
+    res: Dict = {"split": split, "threshold": threshold, "overall": score_rows(out, bundle, rows, threshold),
+                 "by_domain": {}, "by_dataset": {}}
+    for dom, nm in ((0, "source"), (1, "target")):
+        m = bundle.domain[rows] == dom
+        if m.any():
+            sub = {k: v[m] for k, v in out.items() if hasattr(v, "__len__") and len(v) == len(rows)}
+            res["by_domain"][nm] = score_rows(sub, bundle, rows[m], threshold)
+    for d in DATASETS:
+        m = bundle.dataset[rows] == DATASET_ID[d]
+        if m.any():
+            sub = {k: v[m] for k, v in out.items() if hasattr(v, "__len__") and len(v) == len(rows)}
+            res["by_dataset"][d] = score_rows(sub, bundle, rows[m], threshold)
+    if "transformer_rul" in out:                              # contribution of the XGBoost ensemble stage
+        res["transformer_only"] = score_rows({"rul": out["transformer_rul"], "fail_prob": out["transformer_fail_prob"]},
+                                             bundle, rows, threshold)
+    return res

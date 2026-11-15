@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Stage 1-3 of data collection: load datasets, preprocess, stratify, augment, split, save."""
+"""Stage 1-3 of data collection (§3.4): load the four datasets, preprocess, stratify, augment, split, save."""
 import argparse
 import _boot  # noqa: F401
 from src.config import add_common_args, load_config
@@ -12,10 +12,12 @@ if __name__ == "__main__":
     a = ap.parse_args()
     cfg = load_config(a.config, a.overrides)
     meta = prepare(cfg, a.raw_dir)["meta"]
-    print(f"corpus: {meta.get('n_total')} windows  (source {meta.get('n_source')}, target {meta.get('n_target')})")
-    for k, v in (meta.get("datasets") or {}).items():
-        print(f"  {k:7s} source {v.get('n_source')} target {v.get('n_target')}")
-    missing = meta.get("missing") or meta.get("missing_datasets") or {}
-    for k, why in missing.items():
-        msg = why if isinstance(why, str) else str(why)
-        print(f"  MISSING {k}: {msg.splitlines()[0]}")
+    print(f"corpus: {meta['n_total']} windows  (source {meta['n_source']}, target {meta['n_target']})")
+    for k, v in meta["datasets"].items():
+        print(f"  {k:7s} source {v['n_source']:6d}/{v['requested_source']:<6d} target {v['n_target']:6d}/{v['requested_target']:<6d}")
+    for k, why in meta["missing_datasets"].items():
+        print(f"  MISSING {k}: {why.splitlines()[0]}")
+    for s in meta["shortfalls"]:
+        print(f"  shortfall: {s}")
+    if meta["prevalence_outside_8_20pct"]:
+        print(f"  note: train failure prevalence outside the 8-20% band for {meta['prevalence_outside_8_20pct']}")

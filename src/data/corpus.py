@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -12,7 +12,7 @@ from .augmentation import NigerianAugmentor
 from .loaders import Series, load_all
 from .preprocess import Normalizer, cap_rul
 from .sampling import assign_splits, sample_w3, stratified_sample
-from .schema import CHANNELS, DATASET_ID, DATASETS, N_CHANNELS, OFFSETS, to_unified
+from .schema import CHANNELS, DATASET_ID, DATASETS, N_CHANNELS, OFFSETS, STRESSORS, to_unified
 
 
 def _window_series(ser: Series, window: int, stride: int):
@@ -75,108 +75,85 @@ def build_corpus(cfg: Dict, raw_dir: Path, out_dir: Path) -> Dict:
     target_counts = dcfg.get("target_counts", {})
     min_real = float(dcfg.get("w3_min_real_fraction", 0.70))
     rul_cap = float(dcfg.get("rul_cap", 130))
-    label_keep = float(dcfg.get("target_label_keep_frac", 0.30))
-    aug = NigerianAugmentor(cfg.get("augmentation", {}), seed=seed)
+    aug = NigerianAugmentor(cfg["augmentation"], seed=seed)
 
     blocks = []
     meta_ds = {}
+    source_row_offset = 0
 
     for name, series_list in found.items():
         n_src = int(source_counts.get(name, 1000))
         n_tgt = int(target_counts.get(name, n_src))
-        blk = _build_domain_block(series_list, name, window, stride, n_src + n_tgt, rng, min_cell,
+        blk = _build_domain_block(series_list, name, window, stride, n_src, rng, min_cell,
                                   is_w3=(name == "w3"), min_real_fraction=min_real)
         if not blk:
             meta_ds[name] = {"n_source": 0, "n_target": 0}
             continue
 
-        X_u = np.nan_to_num(to_unified(blk["X"], name), nan=0.0).astype(np.float32)
-        rul = cap_rul(blk["rul"], rul_cap)
-        fail = blk["fail"].astype(np.int8)
-        event = blk["event"]
-        has_rul = blk["has_rul"].astype(np.int8)
-        group = blk["group"]
-        prov = blk["provenance"]
+        X_src = np.nan_to_num(to_unified(blk["X"], name), nan=0.0).astype(np.float32)
+        split_src = assign_splits(blk["group"], rng,
+                                  val_frac=float(dcfg.get("split", {}).get("val", 0.10)),
+                                  test_frac=float(dcfg.get("split", {}).get("test", 0.20)))
+        group_to_split = {}
+        for g, s in zip(blk["group"], split_src):
+            group_to_split[str(g)] = int(s)
+        n = len(X_src)
+        has_rul0 = np.where(np.isnan(blk["rul"]), 0, blk["has_rul"]).astype(np.int8)
+        blocks.append({
+            "X": X_src, "rul": cap_rul(blk["rul"], rul_cap), "fail": blk["fail"].astype(np.float32),
+            "event": blk["event"], "has_rul": has_rul0,
+            "domain": np.zeros(n, dtype=np.int8), "split": split_src,
+            "dataset": np.full(n, DATASET_ID[name], dtype=np.int8),
+            "label_avail": np.ones(n, dtype=np.int8), "n_gaps": np.zeros(n, dtype=np.int16),
+            "group": blk["group"],
+            "base": np.full(n, -1, dtype=np.int64),
+        })
 
-        # Source / target partition by index
-        n = len(X_u)
-        n_s = min(n_src, n)
-        idx = np.arange(n)
-        rng.shuffle(idx)
-        src_idx, tgt_idx = idx[:n_s], idx[n_s:n_s + n_tgt]
-        if len(tgt_idx) == 0 and n > n_s:
-            tgt_idx = idx[n_s:]
-
-        def pack(sel, domain):
-            if len(sel) == 0:
-                return None
-            X = X_u[sel]
-            if domain == 1:
-                X, rates = aug.apply_batch(X, name)
-            else:
-                rates = {}
-            split = assign_splits(group[sel], rng,
-                                  val_frac=float(dcfg.get("split", {}).get("val", 0.2)),
-                                  test_frac=float(dcfg.get("split", {}).get("test", 0.1)))
-            label_avail = np.ones(len(sel), dtype=np.int8)
-            if domain == 1:
-                keep = rng.random(len(sel)) < label_keep
-                label_avail = keep.astype(np.int8)
-            return {
-                "X": X, "rul": rul[sel], "fail": fail[sel], "event": event[sel],
-                "has_rul": has_rul[sel] * label_avail, "has_fail": label_avail,
-                "domain": np.full(len(sel), domain, dtype=np.int8),
-                "split": split, "dataset": np.full(len(sel), DATASET_ID[name], dtype=np.int8),
-                "label_avail": label_avail, "group": group[sel], "provenance": prov[sel],
-                "rates": rates,
-            }
-
-        src_pack = pack(src_idx, 0)
-        tgt_pack = pack(tgt_idx, 1)
-        for p in (src_pack, tgt_pack):
-            if p is not None:
-                blocks.append(p)
-
-        real_frac = None
-        if name == "w3" and len(src_idx):
-            real_frac = float(np.mean(prov[src_idx] == "real"))
-        meta_ds[name] = {
-            "n_source": int(len(src_idx)), "n_target": int(len(tgt_idx)),
-            "real_fraction_source": real_frac,
-            "channels": [c for c, _ in CHANNELS[name]],
-        }
+        n_tgt = min(n_tgt, n)
+        tgt_idx = rng.choice(n, size=n_tgt, replace=(n_tgt > n))
+        X_t_list, gaps, applied_counts = [], [], {s: 0 for s in STRESSORS}
+        for i in tgt_idx:
+            x_aug, info = aug.apply(blk["X"][i].copy(), name, stressors=None, force=False)
+            X_t_list.append(to_unified(np.nan_to_num(x_aug, nan=0.0).astype(np.float32), name))
+            gaps.append(int(info.get("n_gaps", 0)))
+            for s in info.get("applied", []):
+                if s in applied_counts:
+                    applied_counts[s] += 1
+        rates = {s: applied_counts[s] / max(1, n_tgt) for s in STRESSORS}
+        label_frac = float(dcfg.get("target_label_fraction", 0.30))
+        label_avail1 = (rng.random(n_tgt) < label_frac).astype(np.int8)
+        split_tgt = np.array([group_to_split[str(g)] for g in blk["group"][tgt_idx]], dtype=np.int8)
+        blocks.append({
+            "X": np.stack(X_t_list).astype(np.float32),
+            "rul": cap_rul(blk["rul"][tgt_idx], rul_cap),
+            "fail": blk["fail"][tgt_idx].astype(np.float32),
+            "event": blk["event"][tgt_idx],
+            "has_rul": np.where(np.isnan(blk["rul"][tgt_idx]), 0, blk["has_rul"][tgt_idx]).astype(np.int8),
+            "domain": np.ones(n_tgt, dtype=np.int8), "split": split_tgt,
+            "dataset": np.full(n_tgt, DATASET_ID[name], dtype=np.int8),
+            "label_avail": label_avail1, "n_gaps": np.asarray(gaps, dtype=np.int16),
+            "group": blk["group"][tgt_idx],
+            "base": (source_row_offset + tgt_idx).astype(np.int64),
+        })
+        source_row_offset += n + n_tgt
+        real_frac = float((blk["provenance"] == "real").mean()) if name == "w3" else None
+        meta_ds[name] = {"n_source": int(n), "n_target": int(n_tgt),
+                         "stressor_rates_target": rates, "real_fraction_source": real_frac,
+                         "channels": [c for c, _ in CHANNELS[name]]}
 
     if not blocks:
-        raise RuntimeError("No windows produced")
+        raise RuntimeError("No datasets could be loaded")
 
-    def cat(key, default=None):
-        parts = [b[key] for b in blocks if key in b]
-        if not parts:
-            return default
-        return np.concatenate(parts, axis=0)
+    def cat(key):
+        return np.concatenate([b[key] for b in blocks], axis=0)
 
-    corpus = {
-        "X": cat("X"),
-        "rul": cat("rul"),
-        "fail": cat("fail"),
-        "event": cat("event"),
-        "has_rul": cat("has_rul"),
-        "domain": cat("domain"),
-        "split": cat("split"),
-        "dataset": cat("dataset"),
-        "label_avail": cat("label_avail"),
-        "group": cat("group"),
-    }
-    # has_fail for masked BCE
-    if any("has_fail" in b for b in blocks):
-        corpus["has_fail"] = cat("has_fail")
-    else:
-        corpus["has_fail"] = corpus["label_avail"]
+    corpus = {k: cat(k) for k in
+              ["X", "rul", "fail", "event", "has_rul", "domain", "split", "dataset", "label_avail", "n_gaps", "group", "base"]}
 
-    # Per-dataset normalizer on clean source train only
+    src_train = (corpus["domain"] == 0) & (corpus["split"] == 0)
+    iqr_k = float(dcfg.get("iqr_k", 1.5))
     normalizers = {}
     X = corpus["X"].copy()
-    src_train = (corpus["domain"] == 0) & (corpus["split"] == 0)
     for d in DATASETS:
         o, nch = OFFSETS[d], len(CHANNELS[d])
         rows_fit = np.flatnonzero(src_train & (corpus["dataset"] == DATASET_ID[d]))
@@ -185,11 +162,11 @@ def build_corpus(cfg: Dict, raw_dir: Path, out_dir: Path) -> Dict:
         if len(rows_fit) == 0:
             continue
         sub = X[rows_fit][:, :, o:o + nch]
-        nrm = Normalizer().fit(sub)
-        normalizers[d] = nrm.state_dict()
+        nrm = Normalizer(iqr_k=iqr_k).fit(sub)
+        normalizers[d] = nrm.to_dict()
         rows_all = np.flatnonzero(corpus["dataset"] == DATASET_ID[d])
-        X[np.ix_(rows_all, np.arange(X.shape[1]), np.arange(o, o + nch))] = nrm.transform(
-            X[rows_all][:, :, o:o + nch])
+        clipped = nrm.clip(X[rows_all][:, :, o:o + nch])
+        X[np.ix_(rows_all, np.arange(X.shape[1]), np.arange(o, o + nch))] = nrm.transform(clipped)
         other = np.r_[np.arange(0, o), np.arange(o + nch, N_CHANNELS)]
         if len(other):
             X[np.ix_(rows_all, np.arange(X.shape[1]), other)] = 0.0
@@ -203,9 +180,7 @@ def build_corpus(cfg: Dict, raw_dir: Path, out_dir: Path) -> Dict:
         "datasets": meta_ds, "missing": missing, "normalizers": normalizers,
         "split_counts": {str(s): int((corpus["split"] == s).sum()) for s in (0, 1, 2)},
     }
-    np.savez_compressed(out_dir / "corpus.npz", **{k: v for k, v in corpus.items() if k != "group"})
-    # groups as object array saved separately
-    np.save(out_dir / "corpus_groups.npy", corpus["group"], allow_pickle=True)
+    np.savez_compressed(out_dir / "corpus.npz", **corpus)
     with open(out_dir / "corpus_meta.json", "w") as f:
         json.dump(meta, f, indent=2, default=str)
     print(f"Corpus: n_total={meta['n_total']} source={meta['n_source']} target={meta['n_target']}")
@@ -218,9 +193,6 @@ def load_corpus(processed_dir: Path) -> Dict:
     processed_dir = Path(processed_dir)
     data = np.load(processed_dir / "corpus.npz", allow_pickle=True)
     corpus = {k: data[k] for k in data.files}
-    gpath = processed_dir / "corpus_groups.npy"
-    if gpath.exists():
-        corpus["group"] = np.load(gpath, allow_pickle=True)
     with open(processed_dir / "corpus_meta.json") as f:
         meta = json.load(f)
     return {"corpus": corpus, "meta": meta}

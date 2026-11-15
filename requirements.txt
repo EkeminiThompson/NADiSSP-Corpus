@@ -1,4 +1,4 @@
-# Training / evaluation
+# Training / evaluation (versions the test-suite was run against)
 numpy>=1.26
 pandas>=2.0
 scipy>=1.11
@@ -6,13 +6,17 @@ scikit-learn>=1.3
 torch>=2.1
 xgboost>=2.0
 joblib>=1.3
-pyarrow>=14.0
+pyarrow>=14.0        # 3W parquet files
 pyyaml>=6.0
-matplotlib>=3.7
-onnx>=1.15
+matplotlib>=3.7      # scripts/make_figures.py
+onnx>=1.15           # export + INT8 quantisation
 onnxruntime>=1.16
+
+# Serving (also in requirements-serve.txt for the Docker image)
 fastapi>=0.110
 uvicorn>=0.29
 pydantic>=2.6
-httpx>=0.27
+httpx>=0.27          # FastAPI TestClient
+
+# Tests
 pytest>=8.0

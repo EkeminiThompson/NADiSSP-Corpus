@@ -1,0 +1,12 @@
+services:
+  nadip-api:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      NADIP_THRESHOLD: "0.5"        # set from results/deployment.json -> threshold_from_validation
+      NADIP_CACHE_HOURS: "72"
+    volumes:
+      - nadip-buffer:/app/buffer
+    restart: unless-stopped
+volumes:
+  nadip-buffer: {}

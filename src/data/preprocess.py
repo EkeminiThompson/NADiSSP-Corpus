@@ -1,51 +1,70 @@
-"""Normalisation and RUL capping for the NADiP corpus."""
+"""Normalisation and RUL capping."""
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict
 
 import numpy as np
 
 
 def cap_rul(rul: np.ndarray, cap: float) -> np.ndarray:
-    out = np.asarray(rul, dtype=np.float32).copy()
-    mask = np.isfinite(out)
-    out[mask] = np.minimum(out[mask], float(cap))
-    return out
+    r = np.asarray(rul, dtype=np.float32).copy()
+    r = np.minimum(r, float(cap))
+    return r
 
 
 class Normalizer:
-    """Per-dataset channel-wise mean/std fitted on clean source train windows only."""
+    """Per-channel z-score with optional IQR-style clipping on the raw scale."""
 
-    def __init__(self):
-        self.mean_: Optional[np.ndarray] = None
-        self.std_: Optional[np.ndarray] = None
+    def __init__(self, iqr_k: float = 1.5):
+        self.iqr_k = float(iqr_k)
+        self.mean_: np.ndarray | None = None
+        self.std_: np.ndarray | None = None
+        self.lo_: np.ndarray | None = None
+        self.hi_: np.ndarray | None = None
 
     def fit(self, X: np.ndarray) -> "Normalizer":
-        # X: (N, T, C) or (N, C)
-        if X.ndim == 3:
-            flat = X.reshape(-1, X.shape[-1])
-        else:
-            flat = X
-        self.mean_ = np.nanmean(flat, axis=0).astype(np.float32)
-        self.std_ = np.nanstd(flat, axis=0).astype(np.float32)
-        self.std_ = np.where(self.std_ < 1e-6, 1.0, self.std_)
+        flat = X.reshape(-1, X.shape[-1]).astype(np.float64)
+        q1 = np.nanpercentile(flat, 25, axis=0)
+        q3 = np.nanpercentile(flat, 75, axis=0)
+        iqr = np.maximum(q3 - q1, 1e-8)
+        self.lo_ = q1 - self.iqr_k * iqr
+        self.hi_ = q3 + self.iqr_k * iqr
+        clipped = np.clip(flat, self.lo_, self.hi_)
+        self.mean_ = np.nanmean(clipped, axis=0)
+        self.std_ = np.nanstd(clipped, axis=0)
+        self.std_ = np.where(self.std_ < 1e-8, 1.0, self.std_)
         return self
 
+    def clip(self, X: np.ndarray) -> np.ndarray:
+        assert self.lo_ is not None
+        return np.clip(X, self.lo_, self.hi_).astype(np.float32)
+
     def transform(self, X: np.ndarray) -> np.ndarray:
-        if self.mean_ is None or self.std_ is None:
-            raise RuntimeError("Normalizer not fitted")
+        assert self.mean_ is not None
         return ((X - self.mean_) / self.std_).astype(np.float32)
 
     def inverse(self, X: np.ndarray) -> np.ndarray:
-        if self.mean_ is None or self.std_ is None:
-            raise RuntimeError("Normalizer not fitted")
-        return (X * self.std_ + self.mean_).astype(np.float32)
+        assert self.mean_ is not None
+        m, s = self.mean_, self.std_
+        if X.shape[-1] != len(m):
+            raise ValueError("inverse expects last dim to match fitted channels")
+        return (X * s + m).astype(np.float32)
 
-    def state_dict(self) -> Dict[str, np.ndarray]:
-        return {"mean": self.mean_, "std": self.std_}
+    def to_dict(self) -> Dict:
+        return {
+            "iqr_k": self.iqr_k,
+            "mean": self.mean_.tolist(),
+            "std": self.std_.tolist(),
+            "lo": self.lo_.tolist(),
+            "hi": self.hi_.tolist(),
+        }
 
-    def load_state_dict(self, d: Dict[str, np.ndarray]) -> "Normalizer":
-        self.mean_ = np.asarray(d["mean"], dtype=np.float32)
-        self.std_ = np.asarray(d["std"], dtype=np.float32)
-        return self
+    @classmethod
+    def from_dict(cls, d: Dict) -> "Normalizer":
+        n = cls(d.get("iqr_k", 1.5))
+        n.mean_ = np.asarray(d["mean"], dtype=np.float64)
+        n.std_ = np.asarray(d["std"], dtype=np.float64)
+        n.lo_ = np.asarray(d["lo"], dtype=np.float64)
+        n.hi_ = np.asarray(d["hi"], dtype=np.float64)
+        return n
