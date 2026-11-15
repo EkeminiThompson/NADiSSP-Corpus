@@ -362,6 +362,15 @@ def train_variant(cfg: Dict, bundle: Bundle, meta: Dict, variant: Variant, seed:
     if variant.use_pretrained and pre:
         state = torch.load(pre, map_location="cpu")
         state = state.get("model_state", state) if isinstance(state, dict) else state
+        # Accept both full NADIP checkpoints and backbone-only checkpoints.
+        if isinstance(state, dict):
+            backbone_state = {
+                k[len("backbone."):]: v
+                for k, v in state.items()
+                if k.startswith("backbone.")
+            }
+            if backbone_state:
+                state = backbone_state
         rep = load_compatible(model.backbone, state)
         t.info["pretrained"] = rep["loaded"] > 0
         t.info["pretrained_report"] = rep
