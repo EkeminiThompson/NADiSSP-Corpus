@@ -28,11 +28,7 @@ from ..training.runner import DEVICE, predict
 from .metrics import auprc, best_f1_threshold, f1_at, rul_rmse
 
 
-# --------------------------------------------------------------------------- packet loss
 def drop_and_impute(X: np.ndarray, rate: float, mode: str, rng: np.random.Generator) -> np.ndarray:
-    """Each time step is lost with probability `rate` (a lost packet drops all channels).
-    mode 'ffill'      : forward-fill from the last received step (leading gap: first received step)
-    mode 'edge_cache' : replace lost steps by cached training statistics (0 in z-score units)."""
     n, T, C = X.shape
     lost = rng.random((n, T)) < rate
     out = X.copy()
@@ -64,10 +60,7 @@ def packet_loss_curve(trained, bundle: Bundle, rows: np.ndarray, thr: float, rat
     return res
 
 
-# -------------------------------------------------------------------- outage + EWC recovery
 def apply_sensor_drift(X: np.ndarray, dataset_ids: np.ndarray, strength: float, seed: int) -> np.ndarray:
-    """Parametric drift of pressure / temperature / vibration channels (z-score units): a per-channel signed
-    offset growing along the window, scaled by `strength` (std units). Used only for the outage simulation."""
     rng = np.random.default_rng(seed)
     out = X.copy()
     T = X.shape[1]
@@ -103,9 +96,6 @@ def ewc_fisher(model: NADIP, bundle: Bundle, rows: np.ndarray, n: int = 256, see
 
 
 def simulate_outage(trained, bundle: Bundle, hours: float, cfg: Dict, seed: int = 42, tol: float = 0.02) -> Dict:
-    """Outage of `hours`: sensor drift accumulates; on reconnection, fine-tune on the buffered (drifted) stream with an
-    EWC penalty anchoring the weights that mattered before the outage. The buffer holds only what the 72-hour edge
-    cache can hold -- beyond that only the most recent 10% survives, so recovery relies on EWC (Table 4.12 'EWC only')."""
     dep = cfg["deployment"]
     if trained.model is None:
         return {"note": "needs a NADIP transformer"}
@@ -155,7 +145,6 @@ def simulate_outage(trained, bundle: Bundle, hours: float, cfg: Dict, seed: int 
             "recovery_tolerance": tol, "evaluated_with": "transformer only (XGBoost stage not updated online)"}
 
 
-# ---------------------------------------------------------------------------------- ONNX
 class _Export(nn.Module):
     def __init__(self, model: NADIP, use_weibull: bool):
         super().__init__()
@@ -171,9 +160,10 @@ def export_onnx(trained, path: Path, window: int, n_channels: int, opset: int = 
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     m = _Export(copy.deepcopy(trained.model).cpu().eval(), trained.variant.use_weibull).eval()
     x = torch.randn(2, window, n_channels)
+    # dynamo= only exists on newer torch; omit for 2.2.x compatibility
     torch.onnx.export(m, (x,), str(path), input_names=["window"], output_names=["rul", "fail_prob"],
                       dynamic_axes={"window": {0: "batch"}, "rul": {0: "batch"}, "fail_prob": {0: "batch"}},
-                      opset_version=opset, dynamo=False)
+                      opset_version=opset)
     return path
 
 
