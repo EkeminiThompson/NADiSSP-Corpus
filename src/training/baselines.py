@@ -27,6 +27,7 @@ class XGBBaseline:
         import xgboost as xgb
         c = self.cfg["training"]["stage5_xgboost"]
         F_tr, _ = window_features(b.X[rows].numpy(), b.dataset[rows])
+        F_tr = np.nan_to_num(F_tr, nan=0.0, posinf=0.0, neginf=0.0)
         kw = dict(n_estimators=c["n_estimators"], max_depth=c["max_depth"], random_state=self.seed, n_jobs=2,
                   tree_method="hist", learning_rate=0.1)
         has = b.has_rul[rows].numpy()
@@ -39,9 +40,14 @@ class XGBBaseline:
 
     def predict(self, X: torch.Tensor, dataset_ids: np.ndarray) -> Dict[str, np.ndarray]:
         f, _ = window_features(X.numpy(), dataset_ids)
+        f = np.nan_to_num(f, nan=0.0, posinf=0.0, neginf=0.0)
         rul = np.clip(self.reg.predict(f), 0, self.cap) if self.reg is not None else np.full(len(f), self.cap / 2)
-        p = self.clf.predict_proba(f)[:, 1] if self.clf is not None else np.zeros(len(f))
-        return {"rul": rul.astype(np.float32), "fail_prob": p.astype(np.float32)}
+        if self.clf is not None:
+            p = self.clf.predict_proba(f)[:, 1]
+        else:
+            p = np.zeros(len(f))
+        p = np.nan_to_num(np.asarray(p, dtype=np.float64), nan=0.0).astype(np.float32)
+        return {"rul": np.nan_to_num(rul, nan=self.cap / 2).astype(np.float32), "fail_prob": p}
 
 
 class LSTMNet(nn.Module):
@@ -88,9 +94,14 @@ class LSTMBaseline:
         self.net.eval()
         r, f = [], []
         for i in range(0, len(X), 256):
-            a, c = self.net(X[i:i + 256].to(DEVICE))
+            a, c = self.net(torch.nan_to_num(X[i:i + 256].to(DEVICE)))
             r.append(a.cpu()); f.append(torch.sigmoid(c).cpu())
-        return {"rul": torch.cat(r).clamp(0, self.cap).numpy(), "fail_prob": torch.cat(f).numpy()}
+        rul = torch.cat(r).clamp(0, self.cap).numpy()
+        prob = torch.cat(f).numpy()
+        return {
+            "rul": np.nan_to_num(rul, nan=self.cap / 2).astype(np.float32),
+            "fail_prob": np.nan_to_num(prob, nan=0.0).astype(np.float32),
+        }
 
 
 def train_baseline(cfg: Dict, bundle: Bundle, variant: Variant, seed: int, log=print):

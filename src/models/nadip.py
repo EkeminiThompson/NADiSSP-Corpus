@@ -1,4 +1,4 @@
-"""NADIP architecture (§3.10, Table 3.15b).
+"""NADIP architecture (section 3.10, Table 3.15b).
 
     x (B,T,C) -> linear embed + positional encoding -> N-layer Transformer encoder -> mean-pool -> z (B,d)
     z -> RUL regression head (C) and fault head
@@ -7,7 +7,7 @@
     z -> Weibull-modulated proportional-hazards head: S(t|z) = exp(-(t/eta)^beta * exp(w^T z))
 
 Not claimed here: Kinetics-400 initialisation. `load_compatible` copies tensors from a checkpoint
-*only where name and shape match* and reports exactly what it loaded; no public video-transformer
+only where name and shape match and reports exactly what it loaded; no public video-transformer
 checkpoint matches d_model=192 / 8 heads / 12 layers, so by default the backbone is randomly initialised.
 """
 
@@ -77,6 +77,11 @@ class TimeSeriesTransformer(nn.Module):
         self.d_model = d_model
         self.num_layers = num_layers
 
+    @property
+    def layers(self):
+        """Alias for tests / Table 3.15b checks (encoder stack)."""
+        return self.encoder.layers
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = self.input(x)
         T = h.size(1)
@@ -95,15 +100,25 @@ class TimeSeriesTransformer(nn.Module):
 
 
 def load_compatible(module: nn.Module, state: Dict[str, torch.Tensor]) -> Dict[str, object]:
+    """Load matching tensors. Returns counts so callers can do rep['loaded'] > 0."""
     cur = module.state_dict()
-    load, skip = {}, []
+    load, skip, shape_mismatch = {}, [], []
     for k, v in state.items():
-        if k in cur and cur[k].shape == v.shape:
-            load[k] = v
-        else:
+        if k not in cur:
             skip.append(k)
+        elif cur[k].shape != v.shape:
+            shape_mismatch.append(k)
+        else:
+            load[k] = v
     missing, unexpected = module.load_state_dict(load, strict=False)
-    return {"loaded": list(load.keys()), "skipped": skip, "missing": list(missing), "unexpected": list(unexpected)}
+    return {
+        "loaded": len(load),
+        "loaded_keys": list(load.keys()),
+        "skipped": skip,
+        "shape_mismatch": len(shape_mismatch),
+        "missing": list(missing),
+        "unexpected": list(unexpected),
+    }
 
 
 def mlp(d_in: int, d_hidden: int, d_out: int, n_layers: int) -> nn.Sequential:
